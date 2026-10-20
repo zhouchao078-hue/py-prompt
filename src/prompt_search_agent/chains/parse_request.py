@@ -2,6 +2,8 @@
 
 TODO: Implement this LangChain chain with ChatDeepSeek structured output.
 """
+from typing import Any, cast
+
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_deepseek import ChatDeepSeek
 
@@ -52,7 +54,10 @@ if __name__ == "__main__":
     chain = create_parse_request_chain(model)
 
     query = "故宫雪夜里，一个穿汉服的少女，电影感，低机位，冷色调"
-    raw_result = chain.invoke({"query": query})
+    raw_result = cast(
+        dict[str, Any],
+        chain.invoke({"query": query}),
+    )
     if raw_result["parsed"] is None:
         print("No structured result")
         print("parsing_error:", raw_result["parsing_error"])
@@ -60,5 +65,3 @@ if __name__ == "__main__":
         print("tool_calls:", raw_result["raw"].tool_calls)
     else:
         print(raw_result["parsed"].model_dump_json(indent=2))
-    result = SearchRequest.model_validate(raw_result)
-    print(result.model_dump_json(indent=2))

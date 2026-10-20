@@ -8,10 +8,6 @@ from prompt_search_agent.storage import (
     connect_database,
     initialize_database,
 )
-from prompt_search_agent.storage import (
-    connect_database,
-    initialize_database,
-)
 
 
 def insert_prompt(

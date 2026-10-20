@@ -1,7 +1,6 @@
 import sqlite3
-from pathlib import Path
 from contextlib import closing
-
+from pathlib import Path
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS prompts (

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from openpyxl import load_workbook, workbook
+from openpyxl import load_workbook
 
 from prompt_search_agent.ingest.records import RawPromptRecord
 
