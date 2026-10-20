@@ -1,0 +1,40 @@
+[project]
+name = "prompt-search-agent"
+version = "0.1.0"
+description = "A local AIGC prompt retrieval and composition assistant"
+readme = "README.md"
+authors = [
+    { name = "lenovo", email = "1103139311@qq.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "langchain>=1.4.6",
+    "langchain-deepseek>=1.1.1",
+    "langgraph>=1.2.16",
+    "path>=17.1.1",
+    "pydantic>=2.14.1",
+    "pydantic-settings>=2.16.0",
+    "python-dotenv>=1.2.4",
+    "rich>=15.0.0",
+]
+
+[project.scripts]
+prompt-search-agent = "prompt_search_agent.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.13,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.414",
+    "pytest>=9.1.1",
+    "ruff>=0.17.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
