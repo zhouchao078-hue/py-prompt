@@ -2,6 +2,7 @@
 
 TODO: Implement parse, search, and render nodes.
 """
+
 from pydantic import ValidationError
 
 from prompt_search_agent.graph.state import AgentState
@@ -13,19 +14,33 @@ PARSE_ATTEMPTS = 3
 def build_parse_request_node(parse_chain):
     def analysis_user_input(state:AgentState) -> dict:
         query = state["user_query"]
+        last_error = "No structured result"
+
         for _ in range(PARSE_ATTEMPTS):
             raw_result = parse_chain.invoke({"query": query})
+            parsed = raw_result.get("parsed")
+            if parsed is not None:
+                try:
+                    request = SearchRequest.model_validate(parsed)
+                except ValidationError as exc:
+                    last_error = str(exc)
+                    continue
 
-            if raw_result is None:
-                continue
+                return {"request": request}
 
-            try:
-                request = SearchRequest.model_validate(raw_result)
-            except ValidationError:
-                continue
+            parsing_error = raw_result.get("parsing_error")
+            raw = raw_result.get("raw")
+            finish_reason = None
+            if raw is not None:
+                finish_reason = raw.response_metadata.get("finish_reason")
 
-            return {"request": request}
-        return {"request": request}
+            last_error = (
+                f"parsed is None; "
+                f"parsing_error={parsing_error!r}; "
+                f"finish_reason={finish_reason!r}"
+            )
+
+        return {"error": last_error}
     return analysis_user_input
 
 
@@ -38,7 +53,28 @@ def build_search_prompts_node(search_backend: PromptSearchBackend):
         return {"candidates": candidates}
     return search_node
 
-
+def build_compose_prompts_node(compose_chain):
+    def compose_node(state:AgentState) -> dict:
+        request = state.get("request")
+        candidates = state.get("candidates")
+        if request is None:
+            return {"error": "Missing request for prompt composition"}
+        if not candidates :
+            return {"error": "No matching prompt"}
+        request_json = request.model_dump_json()
+        candidates_text = "\n\n".join(
+            candidate.prompt_text for candidate in candidates[:3]
+        )
+        final_prompt = compose_chain.invoke(
+            {
+                "request_json": request_json,
+                "candidates_text": candidates_text,
+            }
+        )
+        if not final_prompt:
+            return {"error": "LLM returned an empty prompt"}
+        return {"final_prompt": final_prompt.strip()}
+    return compose_node
 
 
 
