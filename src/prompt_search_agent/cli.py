@@ -10,6 +10,7 @@ from prompt_search_agent.config import Settings
 from prompt_search_agent.graph.workflow import build_workflow
 from prompt_search_agent.llm import create_chat_model
 from prompt_search_agent.search.fake import FakePromptSearchBackend
+from prompt_search_agent.storage import initialize_database
 
 
 def main() -> int:
@@ -22,6 +23,10 @@ def main() -> int:
     user_query = " ".join(args.query)
 
     settings = Settings()  # pyright: ignore[reportCallIssue]
+    initialize_database(
+        settings.prompt_db_path,
+        settings.sqlite_busy_timeout_ms,
+    )
     model = create_chat_model(settings)
 
     parse_chain = create_parse_request_chain(model)

@@ -4,14 +4,21 @@ TODO: Implement settings loading with pydantic-settings.
 """
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pathlib import Path
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 class Settings(BaseSettings):
     deepseek_api_key: SecretStr
     deepseek_model: str = "deepseek-flash"
     deepseek_api_base: str = "https://api.deepseek.com"
+    prompt_db_path: Path = (
+            PROJECT_ROOT / "data" / "indexes" / "prompt_index.sqlite3"
+    )
+    sqlite_busy_timeout_ms: int = 5000
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
