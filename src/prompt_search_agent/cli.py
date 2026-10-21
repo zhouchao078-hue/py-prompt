@@ -2,11 +2,12 @@
 
 import argparse
 import sys
-from pathlib import Path
 
 from prompt_search_agent.config import Settings
 from prompt_search_agent.llm import create_chat_model
-from prompt_search_agent.search.fake import FakePromptSearchBackend
+from prompt_search_agent.search.sqlite import (
+    SqlitePromptSearchBackend,
+)
 from prompt_search_agent.skills.prompt_generation import (
     build_prompt_generation_skill,
 )
@@ -29,13 +30,10 @@ def main() -> int:
     )
     model = create_chat_model(settings)
 
-    fixture_path = (
-        Path(__file__).parents[2]
-        / "tests"
-        / "fixtures"
-        / "prompts.jsonl"
+    search_backend = SqlitePromptSearchBackend(
+        db_path=settings.prompt_db_path,
+        busy_timeout_ms=settings.sqlite_busy_timeout_ms,
     )
-    search_backend = FakePromptSearchBackend(fixture_path)
 
     skill = build_prompt_generation_skill(
         model,

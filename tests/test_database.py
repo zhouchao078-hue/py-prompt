@@ -1,7 +1,8 @@
-import pytest
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+
+import pytest
 
 from prompt_search_agent.ingest.records import PreparedPromptRecord
 from prompt_search_agent.storage.database import (

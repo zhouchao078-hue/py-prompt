@@ -22,3 +22,18 @@ class ImportResult(BaseModel):
     prepared_count: int
     inserted_count: int
     duplicate_count: int
+
+class ImportFailure(BaseModel):
+    source_file: str
+    error: str
+
+
+class BatchImportResult(BaseModel):
+    file_count: int
+    successful_files: int
+    failed_files: int
+    raw_count: int
+    prepared_count: int
+    inserted_count: int
+    duplicate_count: int
+    failures: list[ImportFailure]

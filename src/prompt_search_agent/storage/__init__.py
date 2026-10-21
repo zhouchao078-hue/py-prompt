@@ -5,4 +5,5 @@ from prompt_search_agent.storage.database import (
 from prompt_search_agent.storage.repository import (
         insert_prompt_records,
 )
+
 __all__ = ["connect_database", "initialize_database","insert_prompt_records",]
