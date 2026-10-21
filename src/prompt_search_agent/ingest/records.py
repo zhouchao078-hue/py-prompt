@@ -17,3 +17,8 @@ class PreparedPromptRecord(BaseModel):
     source_file: str
     source_sheet: str | None = None
     source_row: int | None = None
+class ImportResult(BaseModel):
+    raw_count: int
+    prepared_count: int
+    inserted_count: int
+    duplicate_count: int
