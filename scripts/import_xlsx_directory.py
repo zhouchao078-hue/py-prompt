@@ -3,8 +3,9 @@ from pathlib import Path
 
 from prompt_search_agent.config import PROJECT_ROOT
 from prompt_search_agent.ingest.batch_importer import (
-    import_xlsx_directory,
+    import_excel_directory,
 )
+
 DEFAULT_DB_PATH = (
     PROJECT_ROOT / "data" / "indexes" / "prompt_index.sqlite3"
 )
@@ -12,7 +13,7 @@ DEFAULT_DB_PATH = (
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Import all XLSX prompt workbooks into SQLite",
+        description="Import all Excel prompt workbooks into SQLite",
     )
     parser.add_argument(
         "directory_path",
@@ -35,7 +36,7 @@ def main() -> int:
         print(f"Not a directory: {args.directory_path}")
         return 1
 
-    result = import_xlsx_directory(
+    result = import_excel_directory(
         args.directory_path,
         args.db_path,
     )

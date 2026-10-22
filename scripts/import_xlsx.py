@@ -2,26 +2,32 @@ import argparse
 from pathlib import Path
 
 from prompt_search_agent.config import PROJECT_ROOT
-from prompt_search_agent.ingest.importer import import_xlsx_workbook
+from prompt_search_agent.ingest.importer import import_prompt_workbook
 from prompt_search_agent.ingest.records import ImportResult
 
 DEFAULT_DB_PATH = (
     PROJECT_ROOT / "data" / "indexes" / "prompt_index.sqlite3"
 )
 
-def xlsximport(workbook_path: Path,db_path: Path = DEFAULT_DB_PATH,) -> ImportResult:
-    return import_xlsx_workbook(
+
+def xlsximport(
+    workbook_path: Path,
+    db_path: Path = DEFAULT_DB_PATH,
+) -> ImportResult:
+    return import_prompt_workbook(
         workbook_path,
         db_path,
     )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Import one XLSX prompt workbook into SQLite",
+        description="Import one Excel prompt workbook into SQLite",
     )
     parser.add_argument(
         "workbook_path",
         type=Path,
-        help="Path to a single .xlsx workbook",
+        help="Path to a single .xlsx or .xls workbook",
     )
     parser.add_argument(
         "--db-path",
@@ -35,7 +41,7 @@ def main() -> int:
         print(f"Workbook not found: {args.workbook_path}")
         return 1
 
-    if args.workbook_path.suffix.lower() != ".xlsx":
+    if args.workbook_path.suffix.lower() not in {".xlsx", ".xls"}:
         print(f"Unsupported file type: {args.workbook_path.suffix}")
         return 1
 

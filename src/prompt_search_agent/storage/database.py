@@ -22,7 +22,17 @@ CREATE VIRTUAL TABLE IF NOT EXISTS prompts_fts USING fts5(
     content_rowid='id',
     tokenize='unicode61'
 );
-
+CREATE TABLE IF NOT EXISTS query_cache (
+    cache_key TEXT PRIMARY KEY,
+    normalized_query TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    index_version TEXT NOT NULL,
+    request_json TEXT,
+    candidate_ids_json TEXT,
+    final_prompt TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TRIGGER IF NOT EXISTS prompts_ai
 AFTER INSERT ON prompts
 BEGIN

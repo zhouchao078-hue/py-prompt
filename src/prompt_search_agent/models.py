@@ -11,6 +11,8 @@ class SearchRequest(BaseModel):
     style: str | None = None
     camera: str | None = None
     mood: str | None = None
+    query_variants: list[str] = Field(default_factory=list)
+    aspect_ratio: str | None = None
     keywords: list[str] = Field(default_factory=list)
 
 

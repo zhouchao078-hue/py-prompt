@@ -3,16 +3,25 @@ from zipfile import BadZipFile
 
 from openpyxl.utils.exceptions import InvalidFileException
 from pydantic import ValidationError
+from xlrd.biffh import XLRDError
 
-from prompt_search_agent.ingest.importer import import_xlsx_workbook
+from prompt_search_agent.ingest.importer import import_prompt_workbook
 from prompt_search_agent.ingest.records import BatchImportResult, ImportFailure
 
 
-def import_xlsx_directory(directory_path: Path,db_path: Path,busy_timeout_ms: int = 5000,) -> BatchImportResult:
-    file_count = 0
+def import_excel_directory(
+    directory_path: Path,
+    db_path: Path,
+    busy_timeout_ms: int = 5000,
+) -> BatchImportResult:
     files = [
         file_path
-        for file_path in sorted(directory_path.glob("*.xlsx"))
+        for file_path in sorted(
+            [
+                *directory_path.glob("*.xlsx"),
+                *directory_path.glob("*.xls"),
+            ]
+        )
         if not file_path.name.startswith("~$")
     ]
     raw_count = 0
@@ -23,7 +32,7 @@ def import_xlsx_directory(directory_path: Path,db_path: Path,busy_timeout_ms: in
     failures: list[ImportFailure] = []
     for file_path in files:
         try:
-            result = import_xlsx_workbook(
+            result = import_prompt_workbook(
                 file_path,
                 db_path,
                 busy_timeout_ms,
@@ -33,6 +42,7 @@ def import_xlsx_directory(directory_path: Path,db_path: Path,busy_timeout_ms: in
             BadZipFile,
             InvalidFileException,
             ValidationError,
+            XLRDError,
             ) as exc:
             failures.append(
                 ImportFailure(
@@ -41,7 +51,6 @@ def import_xlsx_directory(directory_path: Path,db_path: Path,busy_timeout_ms: in
                 )
             )
             continue
-        file_count += 1
         successful_files += 1
         raw_count += result.raw_count
         prepared_count += result.prepared_count
@@ -56,4 +65,18 @@ def import_xlsx_directory(directory_path: Path,db_path: Path,busy_timeout_ms: in
         inserted_count=inserted_count,
         duplicate_count=duplicate_count,
         failures=failures,
+    )
+
+
+def import_xlsx_directory(
+    directory_path: Path,
+    db_path: Path,
+    busy_timeout_ms: int = 5000,
+) -> BatchImportResult:
+    """Backward-compatible alias for Excel directory imports."""
+
+    return import_excel_directory(
+        directory_path,
+        db_path,
+        busy_timeout_ms,
     )

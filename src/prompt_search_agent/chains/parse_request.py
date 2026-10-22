@@ -12,7 +12,20 @@ from prompt_search_agent.llm import create_chat_model
 from prompt_search_agent.models import SearchRequest
 
 FEW_SHOT_EXAMPLES ="""
-    {{"subject":"少女","scene":"故宫雪夜","style":"电影感","camera":"低机位","mood":"冷清","keywords":["汉服","冷色调"]}}
+    {{
+  "subject": "猫",
+  "scene": "雪山雪地",
+  "style": "电影写实摄影",
+  "camera": "超广角",
+  "mood": "平静",
+  "keywords": ["白色", "短毛", "短腿", "胖", "滑雪", "8k"],
+  "query_variants": [
+    "白色 小猫",
+    "短腿 猫 雪地",
+    "胖猫 雪山"
+  ],
+  "aspect_ratio": "2:3"
+}}
 """
 
 SYSTEM_PROMPT = ("""你是 AIGC 提示词检索需求解析器。
@@ -25,6 +38,8 @@ SYSTEM_PROMPT = ("""你是 AIGC 提示词检索需求解析器。
 - camera：镜头、机位、构图或视角
 - mood：情绪和氛围
 - keywords：服装、颜色、灯光、画质等其他视觉要素
+- query_variants：生成 2～4 个简短检索变体，用于召回语义相近的提示词
+- aspect_ratio：单独保存画幅比例，例如 2:3，不要放入 keywords 或 query_variants
 
 只提取用户明确表达或可以合理推断的视觉信息。
 不要把一句话完整复制到字段中，每个字段应使用简短词组。
