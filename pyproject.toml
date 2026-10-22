@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "fastapi>=0.159.1",
     "jieba>=0.42.1",
     "langchain>=1.4.6",
     "langchain-deepseek>=1.1.1",
@@ -18,11 +19,13 @@ dependencies = [
     "pydantic-settings>=2.16.0",
     "python-dotenv>=1.2.4",
     "rich>=15.0.0",
+    "uvicorn[standard]>=0.54.0",
     "xlrd>=2.0.2",
 ]
 
 [project.scripts]
 prompt-search-agent = "prompt_search_agent.cli:main"
+prompt-search-web = "prompt_search_agent.webapp:run"
 
 [build-system]
 requires = ["uv_build>=0.12.13,<0.13.0"]

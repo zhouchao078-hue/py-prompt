@@ -6,7 +6,10 @@ import sqlite3
 import sys
 
 from prompt_search_agent.chains.compose_prompt import (
-    SYSTEM_PROMPT as COMPOSE_SYSTEM_PROMPT,
+    COMPOSE_SYSTEM_PROMPT,
+)
+from prompt_search_agent.chains.generate_prompt import (
+    GENERATE_SYSTEM_PROMPT,
 )
 from prompt_search_agent.chains.parse_request import (
     SYSTEM_PROMPT as PARSE_SYSTEM_PROMPT,
@@ -53,6 +56,7 @@ def main() -> int:
         PARSE_SYSTEM_PROMPT,
         RERANK_SYSTEM_PROMPT,
         COMPOSE_SYSTEM_PROMPT,
+        GENERATE_SYSTEM_PROMPT,
     )
     index_version = get_prompt_index_version(
         settings.prompt_db_path,

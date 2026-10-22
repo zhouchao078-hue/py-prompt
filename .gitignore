@@ -19,6 +19,7 @@ wheels/
 # Local data and generated indexes
 data/raw/
 data/indexes/
+data/eval/
 *.sqlite3
 
 # OS and editor files

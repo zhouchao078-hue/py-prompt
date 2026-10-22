@@ -13,5 +13,6 @@ class AgentState(TypedDict):
     candidates: NotRequired[list[PromptCandidate]]
     reranked_candidates: NotRequired[list[PromptCandidate]]
     needs_generation: NotRequired[bool]
+    generated_from_brief: NotRequired[bool]
     error: NotRequired[str]
     final_prompt: NotRequired[str]

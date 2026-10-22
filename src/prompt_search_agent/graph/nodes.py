@@ -141,14 +141,43 @@ def build_compose_prompts_node(compose_chain):
         )
         final_prompt = compose_chain.invoke(
             {
+                "user_query": state["user_query"],
                 "request_json": request_json,
                 "candidates_text": candidates_text,
             }
         )
         if not final_prompt:
             return {"error": "LLM returned an empty prompt"}
-        return {"final_prompt": final_prompt.strip()}
+        return {
+            "final_prompt": final_prompt.strip(),
+            "generated_from_brief": False,
+        }
     return compose_node
+
+
+def build_generate_prompt_node(generate_chain):
+    def generate_prompt_node(state: AgentState) -> dict:
+        request = state.get("request")
+
+        if request is None:
+            return {"error": "Missing request for direct generation"}
+
+        final_prompt = generate_chain.invoke(
+            {
+                "user_query": state["user_query"],
+                "request_json": request.model_dump_json(),
+            }
+        )
+
+        if not final_prompt:
+            return {"error": "LLM returned an empty prompt"}
+
+        return {
+            "final_prompt": final_prompt.strip(),
+            "generated_from_brief": True,
+        }
+
+    return generate_prompt_node
 
 
 

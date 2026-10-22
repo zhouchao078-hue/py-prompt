@@ -44,3 +44,12 @@ class RerankedCandidate(BaseModel):
 class RerankResult(BaseModel):
     selected: list[RerankedCandidate] = Field(default_factory=list)
     needs_generation: bool = False
+
+
+class PromptQualityResult(BaseModel):
+    score: int = Field(ge=0, le=100)
+    passed: bool
+    missing_requirements: list[str] = Field(default_factory=list)
+    contradictions: list[str] = Field(default_factory=list)
+    irrelevant_content: list[str] = Field(default_factory=list)
+    verdict: str

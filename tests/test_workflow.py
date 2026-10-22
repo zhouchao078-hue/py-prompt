@@ -95,6 +95,21 @@ class FakeComposeChain:
         return self.output
 
 
+class FakeGenerateChain:
+    def __init__(self, output: str = "直接生成提示词") -> None:
+        self.output = output
+        self.calls: list[dict[str, str]] = []
+
+    def invoke(
+        self,
+        input_: dict[str, str],
+        config: Any = None,
+        **kwargs: Any,
+    ) -> str:
+        self.calls.append(input_)
+        return self.output
+
+
 def make_candidate(number: int) -> PromptCandidate:
     return PromptCandidate(
         prompt_id=f"p{number:03d}",
@@ -128,12 +143,14 @@ def test_workflow_success() -> None:
     compose_chain = FakeComposeChain(
         "电影感少女站在雪夜故宫中"
     )
+    generate_chain = FakeGenerateChain()
 
     workflow = build_workflow(
         parse_chain,
         search_backend,
         rerank_chain,
         compose_chain,
+        generate_chain,
     )
     result = workflow.invoke(
         {"user_query": "雪夜故宫里的电影感少女"}
@@ -148,6 +165,8 @@ def test_workflow_success() -> None:
     assert result["final_prompt"] == "电影感少女站在雪夜故宫中"
     assert search_backend.calls[0][1] == 20
     assert "候选提示词 2" in compose_chain.calls[0]["candidates_text"]
+    assert compose_chain.calls[0]["user_query"] == "雪夜故宫里的电影感少女"
+    assert generate_chain.calls == []
 
 
 def test_rerank_filters_unknown_ids_and_limits_to_three() -> None:
@@ -166,11 +185,13 @@ def test_rerank_filters_unknown_ids_and_limits_to_three() -> None:
         ],
     )
     compose_chain = FakeComposeChain()
+    generate_chain = FakeGenerateChain()
     workflow = build_workflow(
         FakeParseChain(request),
         FakeSearchBackend(candidates),
         rerank_chain,
         compose_chain,
+        generate_chain,
     )
 
     result = workflow.invoke({"user_query": "测试重排"})
@@ -187,12 +208,14 @@ def test_workflow_stops_when_parse_fails() -> None:
     search_backend = FakeSearchBackend([])
     rerank_chain = FakeRerankChain([])
     compose_chain = FakeComposeChain()
+    generate_chain = FakeGenerateChain()
 
     workflow = build_workflow(
         parse_chain,
         search_backend,
         rerank_chain,
         compose_chain,
+        generate_chain,
     )
     result = workflow.invoke({"user_query": "无法解析的请求"})
 
@@ -204,6 +227,7 @@ def test_workflow_stops_when_parse_fails() -> None:
     assert search_backend.calls == []
     assert rerank_chain.calls == []
     assert compose_chain.calls == []
+    assert generate_chain.calls == []
 
 
 def test_workflow_sets_needs_generation_when_no_candidates() -> None:
@@ -213,11 +237,13 @@ def test_workflow_sets_needs_generation_when_no_candidates() -> None:
         needs_generation=True,
     )
     compose_chain = FakeComposeChain()
+    generate_chain = FakeGenerateChain("直接生成的雪山小猫提示词")
     workflow = build_workflow(
         FakeParseChain(request),
         FakeSearchBackend([]),
         rerank_chain,
         compose_chain,
+        generate_chain,
     )
 
     result = workflow.invoke({"user_query": "搜索不存在的角色"})
@@ -225,6 +251,7 @@ def test_workflow_sets_needs_generation_when_no_candidates() -> None:
     assert result["candidates"] == []
     assert result["reranked_candidates"] == []
     assert result["needs_generation"] is True
-    assert "final_prompt" not in result
-    assert result["error"] == "No matching prompt"
+    assert result["final_prompt"] == "直接生成的雪山小猫提示词"
+    assert result["generated_from_brief"] is True
     assert compose_chain.calls == []
+    assert "user_query" in generate_chain.calls[0]
