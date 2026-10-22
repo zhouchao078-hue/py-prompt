@@ -10,6 +10,7 @@ from prompt_search_agent.models import SearchRequest
 from prompt_search_agent.search.base import PromptSearchBackend
 
 PARSE_ATTEMPTS = 3
+RERANK_ATTEMPTS = 2
 
 def build_parse_request_node(parse_chain):
     def analysis_user_input(state:AgentState) -> dict:
@@ -49,17 +50,90 @@ def build_search_prompts_node(search_backend: PromptSearchBackend):
         request = state.get("request")
         if request is None:
             return {"error": "Missing parsed search request"}
-        candidates = search_backend.search(request,top_k=5)
+        candidates = search_backend.search(request, top_k=20)
         return {"candidates": candidates}
     return search_node
+
+
+def build_rerank_prompts_node(rerank_chain):
+    def rerank_prompts_node(state: AgentState) -> dict:
+        user_query = state["user_query"]
+        request = state.get("request")
+        candidates = state.get("candidates") or []
+
+        if request is None:
+            return {"error": "Missing search request"}
+
+        if not candidates:
+            return {
+                "reranked_candidates": [],
+                "needs_generation": True,
+            }
+
+        candidates_text = "\n\n".join(
+            (
+                f"prompt_id: {candidate.prompt_id}\n"
+                f"matched_terms: {candidate.matched_terms}\n"
+                f"bm25_relevance: {candidate.relevance_score}\n"
+                f"prompt_text: {candidate.prompt_text}"
+            )
+            for candidate in candidates[:20]
+        )
+
+        for _ in range(RERANK_ATTEMPTS):
+            raw_result = rerank_chain.invoke(
+                {
+                    "user_query": user_query,
+                    "request_json": request.model_dump_json(),
+                    "candidates_text": candidates_text,
+                }
+            )
+            parsed = (
+                raw_result.get("parsed")
+                if isinstance(raw_result, dict)
+                else None
+            )
+
+            if parsed is None:
+                continue
+
+            candidates_by_id = {
+                candidate.prompt_id: candidate
+                for candidate in candidates
+            }
+            selected_ids = list(
+                dict.fromkeys(
+                    item.prompt_id
+                    for item in parsed.selected
+                )
+            )
+            selected = [
+                candidates_by_id[prompt_id]
+                for prompt_id in selected_ids
+                if prompt_id in candidates_by_id
+            ][:3]
+
+            return {
+                "reranked_candidates": selected,
+                "needs_generation": parsed.needs_generation,
+            }
+
+        return {"error": "Rerank failed after retries"}
+
+    return rerank_prompts_node
+
 
 def build_compose_prompts_node(compose_chain):
     def compose_node(state:AgentState) -> dict:
         request = state.get("request")
-        candidates = state.get("candidates")
+        candidates = (
+            state.get("reranked_candidates")
+            or state.get("candidates")
+            or []
+        )
         if request is None:
             return {"error": "Missing request for prompt composition"}
-        if not candidates :
+        if not candidates:
             return {"error": "No matching prompt"}
         request_json = request.model_dump_json()
         candidates_text = "\n\n".join(

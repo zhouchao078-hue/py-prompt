@@ -33,3 +33,14 @@ class PromptCandidate(PromptRecord):
 class SearchResult(BaseModel):
     query: SearchRequest
     candidates: list[PromptCandidate]
+
+
+class RerankedCandidate(BaseModel):
+    prompt_id: str
+    relevance_score: float = Field(ge=0, le=1)
+    reason: str
+
+
+class RerankResult(BaseModel):
+    selected: list[RerankedCandidate] = Field(default_factory=list)
+    needs_generation: bool = False

@@ -1,7 +1,12 @@
 from typing import Any
 
 from prompt_search_agent.graph.workflow import build_workflow
-from prompt_search_agent.models import PromptCandidate, SearchRequest
+from prompt_search_agent.models import (
+    PromptCandidate,
+    RerankedCandidate,
+    RerankResult,
+    SearchRequest,
+)
 
 
 class FakeParseChain:
@@ -16,13 +21,6 @@ class FakeParseChain:
         **kwargs: Any,
     ) -> dict[str, Any]:
         self.calls.append(input_)
-
-        if self.parsed is None:
-            return {
-                "raw": None,
-                "parsed": None,
-                "parsing_error": None,
-            }
 
         return {
             "raw": None,
@@ -42,7 +40,44 @@ class FakeSearchBackend:
         top_k: int = 5,
     ) -> list[PromptCandidate]:
         self.calls.append((request, top_k))
-        return self.candidates
+        return self.candidates[:top_k]
+
+
+class FakeRerankChain:
+    def __init__(
+        self,
+        selected_ids: list[str],
+        needs_generation: bool = False,
+        parsed: RerankResult | None = None,
+    ) -> None:
+        self.selected_ids = selected_ids
+        self.needs_generation = needs_generation
+        self.parsed = parsed
+        self.calls: list[dict[str, str]] = []
+
+    def invoke(
+        self,
+        input_: dict[str, str],
+        config: Any = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        self.calls.append(input_)
+        result = self.parsed or RerankResult(
+            selected=[
+                RerankedCandidate(
+                    prompt_id=prompt_id,
+                    relevance_score=0.9,
+                    reason="test",
+                )
+                for prompt_id in self.selected_ids
+            ],
+            needs_generation=self.needs_generation,
+        )
+        return {
+            "raw": None,
+            "parsed": result,
+            "parsing_error": None,
+        }
 
 
 class FakeComposeChain:
@@ -82,93 +117,114 @@ def test_workflow_success() -> None:
     candidates = [
         make_candidate(1),
         make_candidate(2),
+        make_candidate(3),
     ]
 
     parse_chain = FakeParseChain(request)
     search_backend = FakeSearchBackend(candidates)
-    compose_chain = FakeComposeChain("电影感少女站在雪夜故宫中")
+    rerank_chain = FakeRerankChain(
+        selected_ids=["p002", "p001"],
+    )
+    compose_chain = FakeComposeChain(
+        "电影感少女站在雪夜故宫中"
+    )
 
     workflow = build_workflow(
         parse_chain,
         search_backend,
+        rerank_chain,
         compose_chain,
     )
-
     result = workflow.invoke(
         {"user_query": "雪夜故宫里的电影感少女"}
     )
 
     assert result["request"] == request
     assert result["candidates"] == candidates
+    assert result["reranked_candidates"] == [
+        candidates[1],
+        candidates[0],
+    ]
     assert result["final_prompt"] == "电影感少女站在雪夜故宫中"
-    assert search_backend.calls[0][1] == 5
-    assert "候选提示词 1" in compose_chain.calls[0]["candidates_text"]
+    assert search_backend.calls[0][1] == 20
+    assert "候选提示词 2" in compose_chain.calls[0]["candidates_text"]
+
+
+def test_rerank_filters_unknown_ids_and_limits_to_three() -> None:
+    request = SearchRequest(subject="少女")
+    candidates = [
+        make_candidate(number)
+        for number in range(1, 6)
+    ]
+    rerank_chain = FakeRerankChain(
+        selected_ids=[
+            "unknown",
+            "p004",
+            "p003",
+            "p002",
+            "p001",
+        ],
+    )
+    compose_chain = FakeComposeChain()
+    workflow = build_workflow(
+        FakeParseChain(request),
+        FakeSearchBackend(candidates),
+        rerank_chain,
+        compose_chain,
+    )
+
+    result = workflow.invoke({"user_query": "测试重排"})
+
+    assert [
+        candidate.prompt_id
+        for candidate in result["reranked_candidates"]
+    ] == ["p004", "p003", "p002"]
+    assert "候选提示词 1" not in compose_chain.calls[0]["candidates_text"]
 
 
 def test_workflow_stops_when_parse_fails() -> None:
     parse_chain = FakeParseChain(None)
     search_backend = FakeSearchBackend([])
+    rerank_chain = FakeRerankChain([])
     compose_chain = FakeComposeChain()
 
     workflow = build_workflow(
         parse_chain,
         search_backend,
+        rerank_chain,
         compose_chain,
     )
-
     result = workflow.invoke({"user_query": "无法解析的请求"})
 
     assert "request" not in result
     assert "candidates" not in result
     assert "final_prompt" not in result
     assert "error" in result
-
-    # analysis_user_input 默认最多重试三次
     assert len(parse_chain.calls) == 3
     assert search_backend.calls == []
+    assert rerank_chain.calls == []
     assert compose_chain.calls == []
 
 
-def test_workflow_returns_error_when_search_has_no_candidates() -> None:
+def test_workflow_sets_needs_generation_when_no_candidates() -> None:
     request = SearchRequest(subject="不存在的角色")
-    parse_chain = FakeParseChain(request)
-    search_backend = FakeSearchBackend([])
+    rerank_chain = FakeRerankChain(
+        selected_ids=[],
+        needs_generation=True,
+    )
     compose_chain = FakeComposeChain()
-
     workflow = build_workflow(
-        parse_chain,
-        search_backend,
+        FakeParseChain(request),
+        FakeSearchBackend([]),
+        rerank_chain,
         compose_chain,
     )
 
     result = workflow.invoke({"user_query": "搜索不存在的角色"})
 
-    assert result["request"] == request
     assert result["candidates"] == []
+    assert result["reranked_candidates"] == []
+    assert result["needs_generation"] is True
     assert "final_prompt" not in result
     assert result["error"] == "No matching prompt"
     assert compose_chain.calls == []
-
-
-def test_compose_uses_only_first_three_candidates() -> None:
-    request = SearchRequest(subject="少女")
-    candidates = [make_candidate(number) for number in range(1, 5)]
-
-    parse_chain = FakeParseChain(request)
-    search_backend = FakeSearchBackend(candidates)
-    compose_chain = FakeComposeChain("最终提示词")
-
-    workflow = build_workflow(
-        parse_chain,
-        search_backend,
-        compose_chain,
-    )
-
-    workflow.invoke({"user_query": "测试前三条候选"})
-
-    candidates_text = compose_chain.calls[0]["candidates_text"]
-
-    assert "候选提示词 1" in candidates_text
-    assert "候选提示词 2" in candidates_text
-    assert "候选提示词 3" in candidates_text
-    assert "候选提示词 4" not in candidates_text

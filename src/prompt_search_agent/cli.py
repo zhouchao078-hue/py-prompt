@@ -11,6 +11,9 @@ from prompt_search_agent.chains.compose_prompt import (
 from prompt_search_agent.chains.parse_request import (
     SYSTEM_PROMPT as PARSE_SYSTEM_PROMPT,
 )
+from prompt_search_agent.chains.rerank_prompts import (
+    RERANK_SYSTEM_PROMPT,
+)
 from prompt_search_agent.config import Settings
 from prompt_search_agent.llm import create_chat_model
 from prompt_search_agent.search.sqlite import (
@@ -48,6 +51,7 @@ def main() -> int:
     normalized_query = normalize_text(user_query).casefold()
     prompt_version = build_prompt_version(
         PARSE_SYSTEM_PROMPT,
+        RERANK_SYSTEM_PROMPT,
         COMPOSE_SYSTEM_PROMPT,
     )
     index_version = get_prompt_index_version(

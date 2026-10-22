@@ -6,6 +6,9 @@ from langchain_deepseek import ChatDeepSeek
 
 from prompt_search_agent.chains.compose_prompt import create_compose_prompt
 from prompt_search_agent.chains.parse_request import create_parse_request_chain
+from prompt_search_agent.chains.rerank_prompts import (
+    create_rerank_prompts_chain,
+)
 from prompt_search_agent.graph.workflow import build_workflow
 from prompt_search_agent.search.base import PromptSearchBackend
 
@@ -27,10 +30,12 @@ def build_prompt_generation_skill(
     """Build the prompt generation skill and its dependencies."""
 
     parse_chain = create_parse_request_chain(model)
+    rerank_chain = create_rerank_prompts_chain(model)
     compose_chain = create_compose_prompt(model)
     workflow = build_workflow(
         parse_chain,
         search_backend,
+        rerank_chain,
         compose_chain,
     )
     return PromptGenerationSkill(workflow)

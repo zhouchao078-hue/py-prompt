@@ -11,5 +11,7 @@ class AgentState(TypedDict):
     user_query: str
     request: NotRequired[SearchRequest]
     candidates: NotRequired[list[PromptCandidate]]
+    reranked_candidates: NotRequired[list[PromptCandidate]]
+    needs_generation: NotRequired[bool]
     error: NotRequired[str]
     final_prompt: NotRequired[str]
