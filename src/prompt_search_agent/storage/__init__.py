@@ -13,6 +13,7 @@ from prompt_search_agent.storage.query_cache import (
     build_prompt_version,
     delete_cached_prompt,
     get_cached_prompt,
+    get_cached_sources_json,
     get_prompt_index_version,
     save_cached_prompt,
 )
@@ -30,6 +31,7 @@ __all__ = [
     "connect_database",
     "delete_cached_prompt",
     "get_cached_prompt",
+    "get_cached_sources_json",
     "get_prompt_index_version",
     "initialize_database",
     "insert_prompt_records",

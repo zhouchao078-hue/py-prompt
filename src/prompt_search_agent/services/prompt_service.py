@@ -27,7 +27,7 @@ from prompt_search_agent.chains.summarize_conversation import (
 )
 from prompt_search_agent.config import Settings
 from prompt_search_agent.llm import create_chat_model
-from prompt_search_agent.models import IntentResult, SearchRequest
+from prompt_search_agent.models import IntentResult, SearchRequest, WebSource
 from prompt_search_agent.search.sqlite import SqlitePromptSearchBackend
 from prompt_search_agent.search.tokenizer import normalize_text
 from prompt_search_agent.skills.prompt_generation import (
@@ -39,9 +39,15 @@ from prompt_search_agent.storage import (
     build_cache_key,
     build_prompt_version,
     get_cached_prompt,
+    get_cached_sources_json,
     get_prompt_index_version,
     initialize_database,
     save_cached_prompt,
+)
+from prompt_search_agent.tools import (
+    WebToolNotConfigured,
+    build_web_fetch_tool,
+    build_web_search_tool,
 )
 
 LOGGER = logging.getLogger(__name__)
@@ -55,6 +61,7 @@ class PromptServiceResult(BaseModel):
     cached: bool
     generated_from_brief: bool = False
     thread_id: str = ""
+    web_sources: list[WebSource] = []
 
 
 class PromptServiceError(RuntimeError):
@@ -148,6 +155,19 @@ class PromptService:
         )
 
         if cached_prompt is not None:
+            sources_json = get_cached_sources_json(
+                self.settings.prompt_db_path,
+                cache_key,
+                self.settings.sqlite_busy_timeout_ms,
+            )
+            web_sources = (
+                [
+                    WebSource.model_validate(source)
+                    for source in json.loads(sources_json)
+                ]
+                if sources_json
+                else []
+            )
             self._save_turn(
                 thread_id,
                 user_query,
@@ -160,6 +180,7 @@ class PromptService:
                 generated_from_brief=False,
                 thread_id=thread_id,
                 intent=intent_result.intent if intent_result else "create",
+                web_sources=web_sources,
             )
 
         result: dict[str, Any] = {}
@@ -211,6 +232,18 @@ class PromptService:
             [candidate.prompt_id for candidate in candidates],
             ensure_ascii=False,
         )
+        web_sources = result.get("web_sources") or []
+        sources_json = (
+            json.dumps(
+                [
+                    source.model_dump()
+                    for source in web_sources
+                ],
+                ensure_ascii=False,
+            )
+            if web_sources
+            else None
+        )
 
         try:
             save_cached_prompt(
@@ -223,6 +256,7 @@ class PromptService:
                 final_prompt=final_prompt,
                 request_json=prompt_spec_json,
                 candidate_ids_json=candidate_ids_json,
+                sources_json=sources_json,
                 busy_timeout_ms=self.settings.sqlite_busy_timeout_ms,
             )
         except sqlite3.DatabaseError:
@@ -244,6 +278,7 @@ class PromptService:
             ),
             thread_id=thread_id,
             intent=intent_result.intent if intent_result else "create",
+            web_sources=web_sources,
         )
 
     def _classify_intent(
@@ -395,7 +430,19 @@ def build_prompt_service(settings: Settings) -> PromptService:
         settings.prompt_db_path,
         settings.sqlite_busy_timeout_ms,
     )
-    skill = build_prompt_generation_skill(model, search_backend)
+    try:
+        web_search_tool = build_web_search_tool(settings)
+        web_fetch_tool = build_web_fetch_tool(settings)
+    except WebToolNotConfigured:
+        web_search_tool = None
+        web_fetch_tool = None
+
+    skill = build_prompt_generation_skill(
+        model,
+        search_backend,
+        web_search_tool=web_search_tool,
+        web_fetch_tool=web_fetch_tool,
+    )
     return PromptService(
         settings,
         skill,

@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS query_cache (
     index_version TEXT NOT NULL,
     request_json TEXT,
     candidate_ids_json TEXT,
+    sources_json TEXT,
     final_prompt TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -109,3 +110,14 @@ def initialize_database(
         connect_database(db_path, busy_timeout_ms)
     ) as connection:
         connection.executescript(SCHEMA_SQL)
+        cache_columns = {
+            row["name"]
+            for row in connection.execute(
+                "PRAGMA table_info(query_cache)"
+            ).fetchall()
+        }
+        if "sources_json" not in cache_columns:
+            connection.execute(
+                "ALTER TABLE query_cache ADD COLUMN sources_json TEXT"
+            )
+        connection.commit()

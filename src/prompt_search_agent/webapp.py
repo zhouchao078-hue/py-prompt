@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from prompt_search_agent.config import Settings
+from prompt_search_agent.models import WebSource
 from prompt_search_agent.services.prompt_service import (
     PromptServiceError,
     PromptServiceResult,
@@ -43,6 +44,7 @@ class PromptResponse(BaseModel):
     cached: bool
     generated_from_brief: bool
     thread_id: str
+    sources: list[WebSource] = []
 
 
 class MediaRequest(BaseModel):
@@ -63,6 +65,7 @@ class MediaResponse(BaseModel):
     note: str
     cached: bool
     thread_id: str
+    sources: list[WebSource] = []
 
 
 def get_prompt_service(request: Request) -> PromptServiceLike:
@@ -147,6 +150,7 @@ def create_app(
             cached=result.cached,
             generated_from_brief=result.generated_from_brief,
             thread_id=result.thread_id,
+            sources=result.web_sources,
         )
 
     @app.post("/api/media", response_model=MediaResponse)
@@ -190,6 +194,7 @@ def create_app(
             ),
             cached=result.cached,
             thread_id=result.thread_id,
+            sources=result.web_sources,
         )
 
     return app

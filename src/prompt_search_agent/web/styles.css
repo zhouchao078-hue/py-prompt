@@ -450,6 +450,45 @@ button {
   margin-top: var(--space-3);
 }
 
+.message-sources {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--line);
+}
+
+.message-sources__label {
+  color: var(--muted-light);
+  font-family: var(--font-mono);
+  font-size: 0.58rem;
+  letter-spacing: 0.09em;
+}
+
+.message-sources__links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.message-sources__links a {
+  max-width: 100%;
+  padding: 5px 8px;
+  overflow: hidden;
+  color: var(--color-text-link);
+  border: 1px solid rgba(217, 119, 87, 0.24);
+  border-radius: 5px;
+  background: rgba(250, 248, 241, 0.48);
+  font-size: 0.68rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-sources__links a:hover {
+  border-color: var(--color-accent-orange);
+}
+
 .icon-button {
   display: inline-grid;
   place-items: center;

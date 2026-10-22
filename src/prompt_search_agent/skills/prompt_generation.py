@@ -38,6 +38,8 @@ class PromptGenerationSkill:
 def build_prompt_generation_skill(
     model: ChatDeepSeek,
     search_backend: PromptSearchBackend,
+    web_search_tool: Any | None = None,
+    web_fetch_tool: Any | None = None,
 ) -> PromptGenerationSkill:
     """Build the prompt generation skill and its dependencies."""
 
@@ -51,5 +53,7 @@ def build_prompt_generation_skill(
         rerank_chain,
         compose_chain,
         generate_chain,
+        web_search_tool=web_search_tool,
+        web_fetch_tool=web_fetch_tool,
     )
     return PromptGenerationSkill(workflow)

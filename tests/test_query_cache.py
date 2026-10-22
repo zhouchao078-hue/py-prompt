@@ -6,6 +6,7 @@ from prompt_search_agent.storage import (
     build_prompt_version,
     delete_cached_prompt,
     get_cached_prompt,
+    get_cached_sources_json,
     get_prompt_index_version,
     initialize_database,
     insert_prompt_records,
@@ -75,12 +76,23 @@ def test_cached_prompt_round_trip(tmp_path: Path) -> None:
         prompt_version="prompt-v1",
         index_version="0:0",
         final_prompt="最终提示词",
+        sources_json=(
+            '[{"title":"source","url":"https://example.com",'
+            '"content":"reference"}]'
+        ),
     )
 
     assert get_cached_prompt(
         db_path,
         cache_key,
     ) == "最终提示词"
+    assert get_cached_sources_json(
+        db_path,
+        cache_key,
+    ) == (
+        '[{"title":"source","url":"https://example.com",'
+        '"content":"reference"}]'
+    )
     assert delete_cached_prompt(
         db_path,
         cache_key,

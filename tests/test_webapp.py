@@ -49,6 +49,7 @@ def test_prompt_endpoint_returns_prompt() -> None:
         "cached": False,
         "generated_from_brief": False,
         "thread_id": "test-thread",
+        "sources": [],
     }
     assert service.queries == ["雪夜里的白猫"]
 

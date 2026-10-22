@@ -83,6 +83,31 @@ def get_cached_prompt(
     return str(row["final_prompt"])
 
 
+def get_cached_sources_json(
+    db_path: Path,
+    cache_key: str,
+    busy_timeout_ms: int = 5000,
+) -> str | None:
+    """Return serialized web sources for a cached prompt."""
+
+    with closing(
+        connect_database(db_path, busy_timeout_ms)
+    ) as connection:
+        row = connection.execute(
+            """
+            SELECT sources_json
+            FROM query_cache
+            WHERE cache_key = ?
+            """,
+            (cache_key,),
+        ).fetchone()
+
+    if row is None or row["sources_json"] is None:
+        return None
+
+    return str(row["sources_json"])
+
+
 def save_cached_prompt(
     db_path: Path,
     cache_key: str,
@@ -93,6 +118,7 @@ def save_cached_prompt(
     final_prompt: str,
     request_json: str | None = None,
     candidate_ids_json: str | None = None,
+    sources_json: str | None = None,
     busy_timeout_ms: int = 5000,
 ) -> None:
     """Insert or replace an exact-query cache entry."""
@@ -110,9 +136,10 @@ def save_cached_prompt(
                 index_version,
                 request_json,
                 candidate_ids_json,
+                sources_json,
                 final_prompt
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(cache_key) DO UPDATE SET
                 normalized_query = excluded.normalized_query,
                 model_name = excluded.model_name,
@@ -120,6 +147,7 @@ def save_cached_prompt(
                 index_version = excluded.index_version,
                 request_json = excluded.request_json,
                 candidate_ids_json = excluded.candidate_ids_json,
+                sources_json = excluded.sources_json,
                 final_prompt = excluded.final_prompt,
                 created_at = CURRENT_TIMESTAMP
             """,
@@ -131,6 +159,7 @@ def save_cached_prompt(
                 index_version,
                 request_json,
                 candidate_ids_json,
+                sources_json,
                 final_prompt,
             ),
         )

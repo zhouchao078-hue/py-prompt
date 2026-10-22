@@ -154,6 +154,7 @@ function appendMessage(
   {
     stateLabel = "",
     copyText = "",
+    sources = [],
   } = {},
 ) {
   const article = document.createElement("article");
@@ -188,6 +189,30 @@ function appendMessage(
     actions.className = "message-actions";
     actions.appendChild(createCopyButton(copyText));
     article.appendChild(actions);
+  }
+
+  if (sources.length > 0) {
+    const sourceList = document.createElement("div");
+    sourceList.className = "message-sources";
+
+    const sourceLabel = document.createElement("span");
+    sourceLabel.className = "message-sources__label";
+    sourceLabel.textContent = "WEB SOURCES";
+
+    const links = document.createElement("div");
+    links.className = "message-sources__links";
+
+    sources.forEach((source) => {
+      const link = document.createElement("a");
+      link.href = source.url;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      link.textContent = source.title || source.url;
+      links.appendChild(link);
+    });
+
+    sourceList.append(sourceLabel, links);
+    article.appendChild(sourceList);
   }
 
   container.appendChild(article);
@@ -303,6 +328,7 @@ async function submitPrompt(event) {
       {
         stateLabel: data.cached ? "CACHED" : "LIVE",
         copyText: data.prompt,
+          sources: data.sources || [],
       },
     );
   } catch (error) {
@@ -381,6 +407,7 @@ async function submitMedia(event) {
       {
         stateLabel: data.cached ? "CACHED" : "LIVE",
         copyText: data.prompt,
+        sources: data.sources || [],
       },
     );
   } catch (error) {

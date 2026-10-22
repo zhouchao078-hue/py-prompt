@@ -18,6 +18,7 @@ from prompt_search_agent.graph.nodes import (
     build_parse_request_node,
     build_rerank_prompts_node,
     build_search_prompts_node,
+    build_web_research_node,
 )
 from prompt_search_agent.graph.state import AgentState
 from prompt_search_agent.llm import create_chat_model
@@ -30,6 +31,8 @@ def build_workflow(
     rerank_chain,
     compose_chain,
     generate_chain,
+    web_search_tool=None,
+    web_fetch_tool=None,
 ):
     graph = StateGraph(AgentState)
     graph.add_node(
@@ -53,6 +56,20 @@ def build_workflow(
         build_generate_prompt_node(generate_chain),
     )
 
+    web_enabled = (
+        web_search_tool is not None
+        and web_fetch_tool is not None
+    )
+
+    if web_enabled:
+        graph.add_node(
+            "web_research",
+            build_web_research_node(
+                web_search_tool,
+                web_fetch_tool,
+            ),
+        )
+
     graph.add_edge(START, "parse_request")
     graph.add_conditional_edges(
         "parse_request",
@@ -61,8 +78,13 @@ def build_workflow(
     graph.add_edge("search_prompt", "rerank_prompts")
     graph.add_conditional_edges(
         "rerank_prompts",
-        route_after_rerank,
+        lambda state: route_after_rerank(state, web_enabled),
     )
+    if web_enabled:
+        graph.add_conditional_edges(
+            "web_research",
+            route_after_web_research,
+        )
     graph.add_edge("compose_prompt", END)
     graph.add_edge("generate_from_brief", END)
     return graph.compile()
@@ -74,8 +96,23 @@ def route_after_parse(state: AgentState) -> str:
     return "search_prompt"
 
 
-def route_after_rerank(state: AgentState) -> str:
+def route_after_rerank(
+    state: AgentState,
+    web_enabled: bool,
+) -> str:
     if state.get("reranked_candidates"):
+        return "compose_prompt"
+
+    if state.get("needs_generation"):
+        if web_enabled:
+            return "web_research"
+        return "generate_from_brief"
+
+    return END
+
+
+def route_after_web_research(state: AgentState) -> str:
+    if state.get("web_context"):
         return "compose_prompt"
 
     if state.get("needs_generation"):

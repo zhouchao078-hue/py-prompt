@@ -67,3 +67,9 @@ class IntentResult(BaseModel):
     confidence: float = Field(ge=0, le=1)
     clarification_question: str | None = None
     reason: str
+
+
+class WebSource(BaseModel):
+    title: str
+    url: str
+    content: str
