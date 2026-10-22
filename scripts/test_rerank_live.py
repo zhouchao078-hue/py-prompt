@@ -66,6 +66,7 @@ def main() -> int:
         rerank_chain.invoke(
             {
                 "user_query": user_query,
+                "conversation_context": "",
                 "request_json": request.model_dump_json(),
                 "candidates_text": candidates_text,
             }

@@ -2,6 +2,8 @@
 
 TODO: Define SearchRequest, PromptCandidate, and SearchResult.
 """
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -53,3 +55,15 @@ class PromptQualityResult(BaseModel):
     contradictions: list[str] = Field(default_factory=list)
     irrelevant_content: list[str] = Field(default_factory=list)
     verdict: str
+
+
+class IntentResult(BaseModel):
+    intent: Literal[
+        "create",
+        "modify",
+        "vague_feedback",
+        "other",
+    ]
+    confidence: float = Field(ge=0, le=1)
+    clarification_question: str | None = None
+    reason: str

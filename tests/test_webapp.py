@@ -12,7 +12,11 @@ class FakePromptService:
         self.should_fail = should_fail
         self.queries: list[str] = []
 
-    def generate(self, user_query: str) -> PromptServiceResult:
+    def generate(
+        self,
+        user_query: str,
+        thread_id: str | None = None,
+    ) -> PromptServiceResult:
         self.queries.append(user_query)
 
         if self.should_fail:
@@ -22,6 +26,7 @@ class FakePromptService:
             final_prompt=f"prompt for {user_query}",
             cached=False,
             generated_from_brief=False,
+            thread_id=thread_id or "test-thread",
         )
 
 
@@ -38,8 +43,12 @@ def test_prompt_endpoint_returns_prompt() -> None:
     assert response.status_code == 200
     assert response.json() == {
         "prompt": "prompt for 雪夜里的白猫",
+        "reply": None,
+        "response_type": "prompt",
+        "intent": "create",
         "cached": False,
         "generated_from_brief": False,
+        "thread_id": "test-thread",
     }
     assert service.queries == ["雪夜里的白猫"]
 
@@ -63,6 +72,10 @@ def test_media_endpoint_exposes_provider_status() -> None:
     assert data["aspect_ratio"] == "16:9"
     assert data["provider_status"] == "not_configured"
     assert data["prompt"] == "prompt for 火星上的机械鲸鱼"
+    assert data["reply"] is None
+    assert data["response_type"] == "prompt"
+    assert data["intent"] == "create"
+    assert data["thread_id"] == "test-thread"
 
 
 def test_prompt_endpoint_maps_service_error() -> None:

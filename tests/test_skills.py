@@ -25,5 +25,6 @@ def test_prompt_generation_skill_invokes_workflow() -> None:
 
     assert workflow.input_state == {
         "user_query": "雪夜故宫里的汉服少女",
+        "conversation_context": "",
     }
     assert result["final_prompt"] == "最终提示词"

@@ -23,32 +23,46 @@ WEB_DIR = Path(__file__).parent / "web"
 
 
 class PromptServiceLike(Protocol):
-    def generate(self, user_query: str) -> PromptServiceResult: ...
+    def generate(
+        self,
+        user_query: str,
+        thread_id: str | None = None,
+    ) -> PromptServiceResult: ...
 
 
 class PromptRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
+    thread_id: str | None = None
 
 
 class PromptResponse(BaseModel):
-    prompt: str
+    prompt: str | None
+    reply: str | None
+    response_type: Literal["prompt", "clarification"]
+    intent: str
     cached: bool
     generated_from_brief: bool
+    thread_id: str
 
 
 class MediaRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     media_type: Literal["image", "video"]
     aspect_ratio: str | None = None
+    thread_id: str | None = None
 
 
 class MediaResponse(BaseModel):
-    prompt: str
+    prompt: str | None
+    reply: str | None
+    response_type: Literal["prompt", "clarification"]
+    intent: str
     media_type: Literal["image", "video"]
     aspect_ratio: str | None
-    provider_status: Literal["not_configured"]
+    provider_status: Literal["not_configured", "not_requested"]
     note: str
     cached: bool
+    thread_id: str
 
 
 def get_prompt_service(request: Request) -> PromptServiceLike:
@@ -115,7 +129,10 @@ def create_app(
         ],
     ) -> PromptResponse:
         try:
-            result = service.generate(payload.message)
+            result = service.generate(
+                payload.message,
+                payload.thread_id,
+            )
         except PromptServiceError as exc:
             raise HTTPException(
                 status_code=422,
@@ -124,8 +141,12 @@ def create_app(
 
         return PromptResponse(
             prompt=result.final_prompt,
+            reply=result.reply,
+            response_type=result.response_type,
+            intent=result.intent,
             cached=result.cached,
             generated_from_brief=result.generated_from_brief,
+            thread_id=result.thread_id,
         )
 
     @app.post("/api/media", response_model=MediaResponse)
@@ -137,7 +158,10 @@ def create_app(
         ],
     ) -> MediaResponse:
         try:
-            result = service.generate(payload.message)
+            result = service.generate(
+                payload.message,
+                payload.thread_id,
+            )
         except PromptServiceError as exc:
             raise HTTPException(
                 status_code=422,
@@ -146,14 +170,26 @@ def create_app(
 
         return MediaResponse(
             prompt=result.final_prompt,
+            reply=result.reply,
+            response_type=result.response_type,
+            intent=result.intent,
             media_type=payload.media_type,
             aspect_ratio=payload.aspect_ratio,
-            provider_status="not_configured",
+            provider_status=(
+                "not_configured"
+                if result.response_type == "prompt"
+                else "not_requested"
+            ),
             note=(
-                "提示词已生成。图片或视频生成服务尚未配置，"
-                "当前页面展示的是可直接提交给生成器的最终提示词。"
+                result.reply or ""
+                if result.response_type == "clarification"
+                else (
+                    "提示词已生成。图片或视频生成服务尚未配置，"
+                    "当前页面展示的是可直接提交给生成器的最终提示词。"
+                )
             ),
             cached=result.cached,
+            thread_id=result.thread_id,
         )
 
     return app

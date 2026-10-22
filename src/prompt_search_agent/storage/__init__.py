@@ -1,3 +1,9 @@
+from prompt_search_agent.storage.conversation import (
+    CompressionBatch,
+    ConversationMessage,
+    ConversationRepository,
+    ConversationSnapshot,
+)
 from prompt_search_agent.storage.database import (
     connect_database,
     initialize_database,
@@ -15,6 +21,10 @@ from prompt_search_agent.storage.repository import (
 )
 
 __all__ = [
+    "CompressionBatch",
+    "ConversationMessage",
+    "ConversationRepository",
+    "ConversationSnapshot",
     "build_cache_key",
     "build_prompt_version",
     "connect_database",

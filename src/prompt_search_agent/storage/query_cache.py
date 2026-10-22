@@ -27,12 +27,13 @@ def build_cache_key(
     model_name: str,
     prompt_version: str,
     index_version: str,
+    context_key: str = "",
 ) -> str:
     """Build a key that invalidates when inputs or dependencies change."""
 
     return sha256_text(
-        f"{normalized_query}\x00{model_name}\x00"
-        f"{prompt_version}\x00{index_version}"
+        f"{normalized_query}\x00{model_name}\x00{prompt_version}\x00"
+        f"{index_version}\x00{context_key}"
     )
 
 

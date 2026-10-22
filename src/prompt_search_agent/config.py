@@ -16,6 +16,9 @@ class Settings(BaseSettings):
             PROJECT_ROOT / "data" / "indexes" / "prompt_index.sqlite3"
     )
     sqlite_busy_timeout_ms: int = 5000
+    conversation_recent_messages: int = 8
+    conversation_compress_after_messages: int = 12
+    conversation_summary_max_chars: int = 800
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

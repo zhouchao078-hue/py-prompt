@@ -33,6 +33,30 @@ CREATE TABLE IF NOT EXISTS query_cache (
     final_prompt TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS conversations (
+    thread_id TEXT PRIMARY KEY,
+    summary TEXT NOT NULL DEFAULT '',
+    summarized_until_message_id INTEGER NOT NULL DEFAULT 0,
+    prompt_spec_json TEXT,
+    previous_prompt TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS conversation_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (thread_id)
+        REFERENCES conversations(thread_id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_messages_thread
+ON conversation_messages(thread_id, id);
 CREATE TRIGGER IF NOT EXISTS prompts_ai
 AFTER INSERT ON prompts
 BEGIN

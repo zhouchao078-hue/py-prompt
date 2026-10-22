@@ -30,6 +30,7 @@ def create_generate_prompt_chain(model: ChatDeepSeek):
             (
                 "human",
                 (
+                    "对话上下文：\n{conversation_context}\n\n"
                     "用户原始需求：\n{user_query}\n\n"
                     "结构化检索条件：\n{request_json}"
                 ),

@@ -15,10 +15,16 @@ RERANK_ATTEMPTS = 2
 def build_parse_request_node(parse_chain):
     def analysis_user_input(state:AgentState) -> dict:
         query = state["user_query"]
+        conversation_context = state.get("conversation_context", "")
         last_error = "No structured result"
 
         for _ in range(PARSE_ATTEMPTS):
-            raw_result = parse_chain.invoke({"query": query})
+            raw_result = parse_chain.invoke(
+                {
+                    "query": query,
+                    "conversation_context": conversation_context,
+                }
+            )
             parsed = raw_result.get("parsed")
             if parsed is not None:
                 try:
@@ -84,6 +90,10 @@ def build_rerank_prompts_node(rerank_chain):
             raw_result = rerank_chain.invoke(
                 {
                     "user_query": user_query,
+                    "conversation_context": state.get(
+                        "conversation_context",
+                        "",
+                    ),
                     "request_json": request.model_dump_json(),
                     "candidates_text": candidates_text,
                 }
@@ -142,6 +152,10 @@ def build_compose_prompts_node(compose_chain):
         final_prompt = compose_chain.invoke(
             {
                 "user_query": state["user_query"],
+                "conversation_context": state.get(
+                    "conversation_context",
+                    "",
+                ),
                 "request_json": request_json,
                 "candidates_text": candidates_text,
             }
@@ -165,6 +179,10 @@ def build_generate_prompt_node(generate_chain):
         final_prompt = generate_chain.invoke(
             {
                 "user_query": state["user_query"],
+                "conversation_context": state.get(
+                    "conversation_context",
+                    "",
+                ),
                 "request_json": request.model_dump_json(),
             }
         )

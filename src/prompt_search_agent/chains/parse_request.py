@@ -51,7 +51,13 @@ def create_parse_request_chain(model: ChatDeepSeek):
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", SYSTEM_PROMPT),
-            ("human", "{query}"),
+            (
+                "human",
+                (
+                    "对话上下文：\n{conversation_context}\n\n"
+                    "用户当前消息：\n{query}"
+                ),
+            ),
         ]
     )
     structured_model = model.with_structured_output(
@@ -71,7 +77,12 @@ if __name__ == "__main__":
     query = "故宫雪夜里，一个穿汉服的少女，电影感，低机位，冷色调"
     raw_result = cast(
         dict[str, Any],
-        chain.invoke({"query": query}),
+        chain.invoke(
+            {
+                "query": query,
+                "conversation_context": "",
+            }
+        ),
     )
     if raw_result["parsed"] is None:
         print("No structured result")

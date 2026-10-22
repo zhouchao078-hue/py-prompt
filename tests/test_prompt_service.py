@@ -9,7 +9,11 @@ from prompt_search_agent.storage import initialize_database
 
 
 class FailingSkill:
-    def invoke(self, user_query: str) -> dict[str, Any]:
+    def invoke(
+        self,
+        user_query: str,
+        conversation_context: str = "",
+    ) -> dict[str, Any]:
         return {"error": "parse failed"}
 
 
@@ -37,3 +41,4 @@ def test_prompt_service_falls_back_to_direct_generation(
     assert result.final_prompt == "fallback for 火星上的紫色机械鲸鱼"
     assert result.generated_from_brief is True
     assert result.cached is False
+    assert result.thread_id

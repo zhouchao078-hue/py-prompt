@@ -5,6 +5,10 @@ const state = {
     prompt: false,
     media: false,
   },
+  threadIds: {
+    prompt: "",
+    media: "",
+  },
 };
 
 const toolButtons = Array.from(document.querySelectorAll(".tool-item"));
@@ -39,6 +43,41 @@ const toolCopy = {
     title: "影像生成",
   },
 };
+
+function loadThreadId(tool) {
+  const storageKey = `prompt-atelier-thread-${tool}`;
+
+  try {
+    const existing = localStorage.getItem(storageKey);
+
+    if (existing) {
+      return existing;
+    }
+
+    const created = crypto.randomUUID();
+    localStorage.setItem(storageKey, created);
+    return created;
+  } catch {
+    return crypto.randomUUID();
+  }
+}
+
+function saveThreadId(tool, threadId) {
+  if (!threadId) {
+    return;
+  }
+
+  state.threadIds[tool] = threadId;
+
+  try {
+    localStorage.setItem(
+      `prompt-atelier-thread-${tool}`,
+      threadId,
+    );
+  } catch {
+    // Conversation still works for the current page session.
+  }
+}
 
 function switchTool(toolName) {
   state.tool = toolName;
@@ -238,8 +277,25 @@ async function submitPrompt(event) {
   const typing = appendTyping(promptMessages, "RETRIEVING");
 
   try {
-    const data = await postJson("/api/prompt", { message });
+    const data = await postJson("/api/prompt", {
+      message,
+      thread_id: state.threadIds.prompt,
+    });
+    saveThreadId("prompt", data.thread_id);
     typing.remove();
+
+    if (data.response_type === "clarification") {
+      appendMessage(
+        promptMessages,
+        "assistant",
+        data.reply,
+        {
+          stateLabel: "CLARIFY",
+        },
+      );
+      return;
+    }
+
     appendMessage(
       promptMessages,
       "assistant",
@@ -290,9 +346,27 @@ async function submitMedia(event) {
       message,
       media_type: state.mediaType,
       aspect_ratio: aspectRatio.value,
+      thread_id: state.threadIds.media,
     });
+    saveThreadId("media", data.thread_id);
 
     typing.remove();
+
+    if (data.response_type === "clarification") {
+      previewEmpty.hidden = false;
+      previewResult.hidden = true;
+      previewEmptyLabel.textContent = "等待补充修改方向";
+      appendMessage(
+        mediaMessages,
+        "assistant",
+        data.reply,
+        {
+          stateLabel: "CLARIFY",
+        },
+      );
+      return;
+    }
+
     previewEmpty.hidden = true;
     previewResult.hidden = false;
     previewType.textContent = data.media_type === "image"
@@ -390,6 +464,8 @@ initializeExamples();
 initializeTextareas();
 initializeMediaTabs();
 initializeHealth();
+saveThreadId("prompt", loadThreadId("prompt"));
+saveThreadId("media", loadThreadId("media"));
 
 try {
   const storedTool = localStorage.getItem("prompt-atelier-tool");

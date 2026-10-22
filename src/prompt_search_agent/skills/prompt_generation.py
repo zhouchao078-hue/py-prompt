@@ -22,8 +22,17 @@ class PromptGenerationSkill:
     def __init__(self, workflow: Any) -> None:
         self.workflow = workflow
 
-    def invoke(self, user_query: str) -> dict[str, Any]:
-        return self.workflow.invoke({"user_query": user_query})
+    def invoke(
+        self,
+        user_query: str,
+        conversation_context: str = "",
+    ) -> dict[str, Any]:
+        return self.workflow.invoke(
+            {
+                "user_query": user_query,
+                "conversation_context": conversation_context,
+            }
+        )
 
 
 def build_prompt_generation_skill(
