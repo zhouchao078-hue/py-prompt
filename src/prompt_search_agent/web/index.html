@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Prompt Atelier</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/assets/fonts/fonts.css">
+  <link rel="stylesheet" href="/static/assets/base.css">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="tool-rail" aria-label="工具选择">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div>
+          <div class="brand-name">Prompt Atelier</div>
+          <div class="brand-kicker">AIGC WORKBENCH</div>
+        </div>
+      </div>
+
+      <nav class="tool-nav" role="tablist" aria-label="创作工具">
+        <button
+          class="tool-item is-active"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="panel-prompt"
+          data-tool="prompt"
+        >
+          <span class="tool-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path d="M4 6.5h16M4 12h11M4 17.5h8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+              <path d="m17 15 3 3-3 3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </span>
+          <span class="tool-copy">
+            <strong>提示词工坊</strong>
+            <small>文字视觉</small>
+          </span>
+          <span class="tool-index">01</span>
+        </button>
+
+        <button
+          class="tool-item"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="panel-media"
+          data-tool="media"
+        >
+          <span class="tool-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <rect x="3.5" y="4.5" width="17" height="15" rx="2" stroke="currentColor" stroke-width="1.7"/>
+              <path d="m7 16 3.6-4 2.6 2.7 2.2-2.3L19 16" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="9" cy="9" r="1.4" fill="currentColor"/>
+            </svg>
+          </span>
+          <span class="tool-copy">
+            <strong>影像生成</strong>
+            <small>静帧 / 动态</small>
+          </span>
+          <span class="tool-index">02</span>
+        </button>
+      </nav>
+
+      <div class="rail-footer">
+        <div class="system-status" id="systemStatus">
+          <span class="status-dot"></span>
+          <span>连接本地工作区</span>
+        </div>
+        <div class="rail-note">
+          <span>DeepSeek</span>
+          <span>SQLite RAG</span>
+        </div>
+      </div>
+    </aside>
+
+    <main class="workspace">
+      <header class="workspace-topbar">
+        <div>
+          <p class="topbar-kicker" id="topbarKicker">PROMPT STUDIO</p>
+          <h1 class="topbar-title" id="topbarTitle">提示词工坊</h1>
+        </div>
+        <div class="topbar-meta">
+          <span class="meta-label">LOCAL LIBRARY</span>
+          <span class="meta-value" id="promptCount">LOCAL INDEX</span>
+        </div>
+      </header>
+
+      <div class="workspace-viewport">
+        <section
+          class="tool-panel is-active"
+          id="panel-prompt"
+          role="tabpanel"
+          aria-labelledby="prompt-tool"
+        >
+          <div class="prompt-layout">
+            <section class="conversation-shell" aria-label="提示词对话">
+              <div class="conversation-intro">
+                <span class="eyebrow">PROMPT → IMAGE</span>
+                <h2>从一个念头开始，<br>得到完整画面语言。</h2>
+                <p>人物、场景、镜头与光，都从一句自然的表达开始。</p>
+              </div>
+
+              <div class="message-stream" id="promptMessages" role="log" aria-live="polite">
+                <article class="message message--assistant">
+                  <div class="message-meta">
+                    <span class="message-mark" aria-hidden="true"></span>
+                    <span>Prompt Atelier</span>
+                    <span class="message-state">READY</span>
+                  </div>
+                  <div class="message-body">
+                    等待画面描述。
+                  </div>
+                </article>
+              </div>
+
+              <div class="prompt-examples" aria-label="示例需求">
+                <button type="button" class="example-chip" data-example="雪夜里穿汉服的少女，电影感，低机位，冷色调">
+                  雪夜汉服少女
+                </button>
+                <button type="button" class="example-chip" data-example="一只白色短腿胖小猫在雪山上滑雪，电影感真实摄影，超广角，8k，--ar 2:3">
+                  雪山白猫
+                </button>
+                <button type="button" class="example-chip" data-example="赛博朋克雨夜街头，孤独女杀手，霓虹反光，电影写实，低机位">
+                  赛博女杀手
+                </button>
+              </div>
+
+              <form class="composer" id="promptForm">
+                <label class="sr-only" for="promptInput">输入提示词需求</label>
+                <textarea
+                  id="promptInput"
+                  class="composer-input"
+                  rows="1"
+                  placeholder="描述你想生成的画面..."
+                ></textarea>
+                <div class="composer-actions">
+                  <span class="composer-hint">最多 4000 字</span>
+                  <button class="send-button" type="submit" aria-label="发送提示词需求">
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <path d="M4 12h15M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </button>
+                </div>
+              </form>
+            </section>
+
+            <aside class="workflow-aside" aria-label="工作流状态">
+              <div class="aside-section">
+                <span class="aside-label">SESSION</span>
+                <ol class="process-list">
+                  <li><span>01</span><div><strong>RETRIEVAL</strong><small>SQLite FTS5</small></div></li>
+                  <li><span>02</span><div><strong>RERANK</strong><small>DeepSeek</small></div></li>
+                  <li><span>03</span><div><strong>CACHE</strong><small>Exact match</small></div></li>
+                  <li><span>04</span><div><strong>OUTPUT</strong><small>final_prompt</small></div></li>
+                </ol>
+              </div>
+              <div class="aside-quote">
+                <span class="quote-line"></span>
+                <p>画面不是描述得更多，而是约束得更准。</p>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <section
+          class="tool-panel"
+          id="panel-media"
+          role="tabpanel"
+          aria-labelledby="media-tool"
+          hidden
+        >
+          <div class="media-layout">
+            <section class="media-stage" aria-label="影像预览">
+              <div class="stage-toolbar">
+                <div class="stage-tabs" role="tablist" aria-label="媒体类型">
+                  <button type="button" class="stage-tab is-active" data-media-type="image" role="tab" aria-selected="true">
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <rect x="3.5" y="4.5" width="17" height="15" rx="2" stroke="currentColor" stroke-width="1.6"/>
+                      <path d="m7 16 3.5-4 2.6 2.7 2.2-2.3L19 16" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                    </svg>
+                    图片
+                  </button>
+                  <button type="button" class="stage-tab" data-media-type="video" role="tab" aria-selected="false">
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <rect x="3.5" y="5.5" width="12" height="13" rx="2" stroke="currentColor" stroke-width="1.6"/>
+                      <path d="m15.5 10 4-2.2v8.4l-4-2.2" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+                    </svg>
+                    视频
+                  </button>
+                </div>
+                <label class="ratio-control">
+                  <span>画幅</span>
+                  <select id="aspectRatio">
+                    <option value="2:3">2:3 竖版</option>
+                    <option value="16:9">16:9 横版</option>
+                    <option value="1:1">1:1 方形</option>
+                    <option value="9:16">9:16 手机</option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="preview-frame" id="previewFrame">
+                <div class="preview-grid" aria-hidden="true"></div>
+                <div class="preview-empty" id="previewEmpty">
+                  <span class="preview-number">02 / VISUAL</span>
+                  <div class="preview-glyph" aria-hidden="true">
+                    <svg viewBox="0 0 120 120" fill="none">
+                      <path d="M18 82 50 36l22 30 13-17 17 33" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+                      <circle cx="46" cy="28" r="8" stroke="currentColor" stroke-width="2.2"/>
+                    </svg>
+                  </div>
+                  <p id="previewEmptyLabel">等待画面指令</p>
+                </div>
+                <div class="preview-result" id="previewResult" hidden>
+                  <div class="preview-result-head">
+                    <span id="previewType">IMAGE PROMPT</span>
+                    <span class="preview-status">PROVIDER NOT CONNECTED</span>
+                  </div>
+                  <p id="previewPrompt"></p>
+                </div>
+              </div>
+            </section>
+
+            <section class="media-conversation" aria-label="影像生成对话">
+              <div class="media-chat-header">
+                <span class="eyebrow">MEDIA STUDIO</span>
+                <h2>对话生成影像方案</h2>
+              </div>
+
+              <div class="message-stream media-messages" id="mediaMessages" role="log" aria-live="polite">
+                <article class="message message--assistant">
+                  <div class="message-meta">
+                    <span class="message-mark" aria-hidden="true"></span>
+                    <span>Media Director</span>
+                    <span class="message-state">READY</span>
+                  </div>
+                  <div class="message-body">
+                    影像导演工作区已就绪。
+                  </div>
+                </article>
+              </div>
+
+              <form class="composer composer--media" id="mediaForm">
+                <label class="sr-only" for="mediaInput">输入影像需求</label>
+                <textarea
+                  id="mediaInput"
+                  class="composer-input"
+                  rows="2"
+                  placeholder="例如：一只机械鲸鱼穿过火星沙尘暴，电影感..."
+                ></textarea>
+                <div class="composer-actions">
+                  <span class="provider-note">GENERATION PROVIDER · PENDING</span>
+                  <button class="send-button" type="submit" aria-label="发送影像需求">
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <path d="M4 12h15M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </button>
+                </div>
+              </form>
+            </section>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
