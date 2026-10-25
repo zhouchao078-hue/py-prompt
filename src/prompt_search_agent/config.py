@@ -23,6 +23,19 @@ class Settings(BaseSettings):
     tavily_max_results: int = 5
     tavily_fetch_max_urls: int = 3
     tavily_max_chars: int = 2500
+    image_api_key: SecretStr | None = None
+    image_api_base: str = "https://api.openai.com/v1"
+    image_model: str | None = None
+    image_response_format: str | None = None
+    image_output_dir: Path = (
+        PROJECT_ROOT / "data" / "generated" / "images"
+    )
+    image_timeout_seconds: float = 120.0
+    image_max_download_bytes: int = 25_000_000
+    image_retention_days: int = 7
+    image_size_square: str = "1024x1024"
+    image_size_landscape: str = "1536x1024"
+    image_size_portrait: str = "1024x1536"
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

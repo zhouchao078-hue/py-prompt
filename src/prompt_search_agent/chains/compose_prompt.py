@@ -4,6 +4,8 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_deepseek import ChatDeepSeek
 
+from prompt_search_agent.chains.context_rules import CONVERSATION_HISTORY_RULES
+
 COMPOSE_SYSTEM_PROMPT = """你是 AIGC 提示词组装器。
 
 根据用户原始需求、结构化检索条件和候选提示词，组装一段可以直接使用的提示词。
@@ -21,6 +23,7 @@ COMPOSE_SYSTEM_PROMPT = """你是 AIGC 提示词组装器。
 - 只输出一段完整、连贯、可直接复制使用的提示词
 - 用户原始需求优先于候选提示词
 """
+COMPOSE_SYSTEM_PROMPT += "\n\n" + CONVERSATION_HISTORY_RULES
 
 
 def create_compose_prompt(model: ChatDeepSeek):

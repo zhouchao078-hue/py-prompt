@@ -6,6 +6,8 @@ from typing import NotRequired, TypedDict
 
 from prompt_search_agent.models import PromptCandidate, SearchRequest, WebSource
 
+NO_MATCHING_PROMPT = "NO_MATCHING_PROMPT"
+
 
 class AgentState(TypedDict):
     user_query: str

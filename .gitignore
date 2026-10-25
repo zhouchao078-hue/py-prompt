@@ -20,6 +20,8 @@ wheels/
 data/raw/
 data/indexes/
 data/eval/
+data/generated/
+data/server-*.log
 *.sqlite3
 
 # OS and editor files

@@ -20,7 +20,7 @@ from prompt_search_agent.graph.nodes import (
     build_search_prompts_node,
     build_web_research_node,
 )
-from prompt_search_agent.graph.state import AgentState
+from prompt_search_agent.graph.state import NO_MATCHING_PROMPT, AgentState
 from prompt_search_agent.llm import create_chat_model
 from prompt_search_agent.search.sqlite import SqlitePromptSearchBackend
 
@@ -103,10 +103,11 @@ def route_after_rerank(
     if state.get("reranked_candidates"):
         return "compose_prompt"
 
-    if state.get("needs_generation"):
-        if web_enabled:
-            return "web_research"
-        return "generate_from_brief"
+    if web_enabled and (
+        state.get("needs_generation")
+        or state.get("error") == NO_MATCHING_PROMPT
+    ):
+        return "web_research"
 
     return END
 
@@ -114,9 +115,6 @@ def route_after_rerank(
 def route_after_web_research(state: AgentState) -> str:
     if state.get("web_context"):
         return "compose_prompt"
-
-    if state.get("needs_generation"):
-        return "generate_from_brief"
 
     return END
 

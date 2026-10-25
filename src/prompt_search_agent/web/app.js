@@ -32,6 +32,17 @@ const previewEmptyLabel = document.getElementById("previewEmptyLabel");
 const previewResult = document.getElementById("previewResult");
 const previewPrompt = document.getElementById("previewPrompt");
 const previewType = document.getElementById("previewType");
+const previewStatus = document.getElementById("previewStatus");
+const previewImageWrap = document.getElementById("previewImageWrap");
+const previewImage = document.getElementById("previewImage");
+const providerNote = document.getElementById("providerNote");
+const addPromptButton = document.getElementById("addPromptButton");
+const promptDialog = document.getElementById("promptDialog");
+const addPromptForm = document.getElementById("addPromptForm");
+const addPromptText = document.getElementById("addPromptText");
+const addPromptCategory = document.getElementById("addPromptCategory");
+const cancelPromptDialog = document.getElementById("cancelPromptDialog");
+const savePromptButton = document.getElementById("savePromptButton");
 
 const toolCopy = {
   prompt: {
@@ -155,6 +166,8 @@ function appendMessage(
     stateLabel = "",
     copyText = "",
     sources = [],
+    actionLabel = "",
+    onAction = null,
   } = {},
 ) {
   const article = document.createElement("article");
@@ -191,6 +204,23 @@ function appendMessage(
     article.appendChild(actions);
   }
 
+  if (actionLabel && onAction) {
+    const actions = article.querySelector(".message-actions")
+      || document.createElement("div");
+    actions.className = "message-actions";
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "message-action-button";
+    button.textContent = actionLabel;
+    button.addEventListener("click", onAction);
+    actions.appendChild(button);
+
+    if (!actions.parentElement) {
+      article.appendChild(actions);
+    }
+  }
+
   if (sources.length > 0) {
     const sourceList = document.createElement("div");
     sourceList.className = "message-sources";
@@ -218,6 +248,62 @@ function appendMessage(
   container.appendChild(article);
   scrollMessages(container);
   return article;
+}
+
+function openPromptDialog(prefill = "") {
+  addPromptText.value = prefill;
+  addPromptCategory.value = "";
+  promptDialog.showModal();
+  requestAnimationFrame(() => addPromptText.focus());
+}
+
+function addPromptFromNotFound(query) {
+  return () => openPromptDialog(query);
+}
+
+function activeMessageContainer() {
+  return state.tool === "media" ? mediaMessages : promptMessages;
+}
+
+async function submitPromptAddition(event) {
+  event.preventDefault();
+
+  const promptText = addPromptText.value.trim();
+  if (!promptText) {
+    addPromptText.focus();
+    return;
+  }
+
+  savePromptButton.disabled = true;
+  savePromptButton.textContent = "保存中...";
+
+  try {
+    const data = await postJson("/api/prompts", {
+      prompt_text: promptText,
+      category: addPromptCategory.value.trim() || null,
+    });
+    promptDialog.close();
+    appendMessage(
+      activeMessageContainer(),
+      "assistant",
+      data.inserted
+        ? "提示词已添加到本地库，可以重新搜索。"
+        : "这条提示词已经在本地库中。",
+      {
+        stateLabel: data.inserted ? "SAVED" : "EXISTS",
+      },
+    );
+    await initializeHealth();
+  } catch (error) {
+    appendMessage(
+      activeMessageContainer(),
+      "error",
+      error instanceof Error ? error.message : "添加提示词失败。",
+    );
+  } finally {
+    savePromptButton.disabled = false;
+    savePromptButton.textContent = "保存到提示词库";
+  }
 }
 
 function appendTyping(container, label = "COMPOSING") {
@@ -309,13 +395,22 @@ async function submitPrompt(event) {
     saveThreadId("prompt", data.thread_id);
     typing.remove();
 
-    if (data.response_type === "clarification") {
+    if (data.response_type !== "prompt") {
+      const notFound = data.response_type === "not_found";
       appendMessage(
         promptMessages,
         "assistant",
         data.reply,
         {
-          stateLabel: "CLARIFY",
+          stateLabel: notFound
+            ? "NO MATCH"
+            : data.response_type === "clarification"
+              ? "CLARIFY"
+              : "MESSAGE",
+          actionLabel: notFound ? "添加这条提示词" : "",
+          onAction: notFound
+            ? addPromptFromNotFound(message)
+            : null,
         },
       );
       return;
@@ -328,7 +423,9 @@ async function submitPrompt(event) {
       {
         stateLabel: data.cached ? "CACHED" : "LIVE",
         copyText: data.prompt,
-          sources: data.sources || [],
+        sources: data.sources || [],
+        actionLabel: "用此提示词直接生图",
+        onAction: () => generateFromPrompt(data.prompt),
       },
     );
   } catch (error) {
@@ -341,6 +438,89 @@ async function submitPrompt(event) {
   } finally {
     setBusy("prompt", false);
     promptInput.focus();
+  }
+}
+
+function activateImageMode() {
+  state.mediaType = "image";
+  stageTabs.forEach((item) => {
+    const active = item.dataset.mediaType === "image";
+    item.classList.toggle("is-active", active);
+    item.setAttribute("aria-selected", String(active));
+  });
+}
+
+function renderGeneratedImage(data, fallbackPrompt = "") {
+  previewEmpty.hidden = true;
+  previewResult.hidden = false;
+  previewResult.classList.add("has-image");
+  previewImageWrap.hidden = false;
+  previewType.textContent = "GENERATED IMAGE";
+  previewStatus.textContent = "GENERATED";
+  providerNote.textContent = data.image_cached
+    ? "OPENAI COMPATIBLE · CACHE HIT"
+    : "OPENAI COMPATIBLE · GENERATED";
+  previewPrompt.textContent = data.prompt || fallbackPrompt;
+  previewImage.src = data.image_url;
+  previewImage.alt = data.prompt || fallbackPrompt || "生成的图片";
+}
+
+async function generateFromPrompt(prompt) {
+  if (!prompt || state.busy.media) {
+    return;
+  }
+
+  activateImageMode();
+  switchTool("media");
+  appendMessage(
+    mediaMessages,
+    "user",
+    "直接使用当前提示词生成图片",
+  );
+  setBusy("media", true);
+  previewEmpty.hidden = false;
+  previewResult.hidden = true;
+  previewResult.classList.remove("has-image");
+  previewImageWrap.hidden = true;
+  previewImage.removeAttribute("src");
+  previewEmptyLabel.textContent = "正在使用当前提示词生成图片…";
+  providerNote.textContent = "GENERATION PROVIDER · WORKING";
+  const typing = appendTyping(mediaMessages, "RENDERING");
+
+  try {
+    const data = await postJson("/api/images/generate", {
+      prompt,
+      aspect_ratio: aspectRatio.value,
+    });
+    typing.remove();
+    renderGeneratedImage(data, prompt);
+    appendMessage(
+      mediaMessages,
+      "assistant",
+      data.image_cached
+        ? "已复用缓存图片。"
+        : "图片已生成并保存。",
+      {
+        stateLabel: data.image_cached ? "IMAGE CACHED" : "GENERATED",
+        copyText: data.prompt || prompt,
+      },
+    );
+  } catch (error) {
+    typing.remove();
+    previewEmpty.hidden = false;
+    previewResult.hidden = true;
+    previewResult.classList.remove("has-image");
+    previewImageWrap.hidden = true;
+    previewImage.removeAttribute("src");
+    previewEmptyLabel.textContent = "当前提示词未能生成图片。";
+    providerNote.textContent = "GENERATION PROVIDER · ERROR";
+    appendMessage(
+      mediaMessages,
+      "error",
+      error instanceof Error ? error.message : "图片生成失败。",
+    );
+  } finally {
+    setBusy("media", false);
   }
 }
 
@@ -364,7 +544,13 @@ async function submitMedia(event) {
   setBusy("media", true);
   previewEmpty.hidden = false;
   previewResult.hidden = true;
-  previewEmptyLabel.textContent = "正在检索视觉参考并组织提示词…";
+  previewResult.classList.remove("has-image");
+  previewImageWrap.hidden = true;
+  previewImage.removeAttribute("src");
+  providerNote.textContent = "GENERATION PROVIDER · WORKING";
+  previewEmptyLabel.textContent = state.mediaType === "image"
+    ? "正在生成图片并保存结果…"
+    : "正在检索视觉参考并组织提示词…";
   const typing = appendTyping(mediaMessages, "DIRECTING");
 
   try {
@@ -378,16 +564,27 @@ async function submitMedia(event) {
 
     typing.remove();
 
-    if (data.response_type === "clarification") {
+    if (data.response_type !== "prompt") {
+      const notFound = data.response_type === "not_found";
       previewEmpty.hidden = false;
       previewResult.hidden = true;
-      previewEmptyLabel.textContent = "等待补充修改方向";
+      previewEmptyLabel.textContent = notFound
+        ? "未检索到匹配提示词"
+        : "等待补充修改方向";
       appendMessage(
         mediaMessages,
         "assistant",
         data.reply,
         {
-          stateLabel: "CLARIFY",
+          stateLabel: notFound
+            ? "NO MATCH"
+            : data.response_type === "clarification"
+              ? "CLARIFY"
+              : "MESSAGE",
+          actionLabel: notFound ? "添加这条提示词" : "",
+          onAction: notFound
+            ? addPromptFromNotFound(message)
+            : null,
         },
       );
       return;
@@ -395,17 +592,45 @@ async function submitMedia(event) {
 
     previewEmpty.hidden = true;
     previewResult.hidden = false;
-    previewType.textContent = data.media_type === "image"
-      ? "IMAGE PROMPT"
-      : "VIDEO PROMPT";
+    const hasImage = Boolean(data.image_url);
+
+    previewResult.classList.toggle("has-image", hasImage);
+    previewImageWrap.hidden = !hasImage;
+    previewType.textContent = hasImage
+      ? "GENERATED IMAGE"
+      : data.media_type === "image"
+        ? "IMAGE PROMPT"
+        : "VIDEO PROMPT";
+    previewStatus.textContent = hasImage
+      ? "GENERATED"
+      : "PROMPT ONLY";
+    providerNote.textContent = hasImage
+      ? data.image_cached
+        ? "OPENAI COMPATIBLE · CACHE HIT"
+        : "OPENAI COMPATIBLE · GENERATED"
+      : "GENERATION PROVIDER · PROMPT ONLY";
     previewPrompt.textContent = data.prompt;
+
+    if (hasImage) {
+      previewImage.src = data.image_url;
+      previewImage.alt = data.prompt || "生成的图片";
+    } else {
+      previewImage.removeAttribute("src");
+      previewImage.alt = "";
+    }
 
     appendMessage(
       mediaMessages,
       "assistant",
-      `最终提示词已生成。\n\n${data.note}`,
+      hasImage
+        ? `图片已生成。\n\n提示词：${data.prompt}`
+        : `最终提示词已生成。\n\n${data.note}`,
       {
-        stateLabel: data.cached ? "CACHED" : "LIVE",
+        stateLabel: data.image_cached
+          ? "IMAGE CACHED"
+          : data.cached
+            ? "PROMPT CACHED"
+            : "LIVE",
         copyText: data.prompt,
         sources: data.sources || [],
       },
@@ -414,6 +639,10 @@ async function submitMedia(event) {
     typing.remove();
     previewEmpty.hidden = false;
     previewResult.hidden = true;
+    previewResult.classList.remove("has-image");
+    previewImageWrap.hidden = true;
+    previewImage.removeAttribute("src");
+    providerNote.textContent = "GENERATION PROVIDER · ERROR";
     previewEmptyLabel.textContent = "本次请求没有生成可用结果。";
     appendMessage(
       mediaMessages,
@@ -457,8 +686,79 @@ function initializeMediaTabs() {
         item.classList.toggle("is-active", active);
         item.setAttribute("aria-selected", String(active));
       });
+
+      if (state.mediaType !== "image") {
+        previewResult.classList.remove("has-image");
+        previewImageWrap.hidden = true;
+        previewImage.removeAttribute("src");
+      }
     });
   });
+}
+
+function initializePromptDialog() {
+  addPromptButton.addEventListener("click", () => openPromptDialog());
+  cancelPromptDialog.addEventListener("click", () => promptDialog.close());
+  addPromptForm.addEventListener("submit", submitPromptAddition);
+
+  promptDialog.addEventListener("click", (event) => {
+    if (event.target === promptDialog) {
+      promptDialog.close();
+    }
+  });
+}
+
+async function loadConversationHistory(tool) {
+  const threadId = state.threadIds[tool];
+  if (!threadId) {
+    return;
+  }
+
+  const container = tool === "prompt" ? promptMessages : mediaMessages;
+
+  try {
+    const response = await fetch(
+      `/api/history/${encodeURIComponent(threadId)}?limit=500`,
+    );
+    if (!response.ok) {
+      return;
+    }
+
+    const data = await response.json();
+    const messages = data.messages || [];
+    if (!messages.length && !data.summary) {
+      return;
+    }
+
+    container.replaceChildren();
+
+    if (data.summary) {
+      appendMessage(
+        container,
+        "assistant",
+        `较早对话摘要：${data.summary}`,
+        {
+          stateLabel: "SUMMARY",
+        },
+      );
+    }
+
+    messages.forEach((message) => {
+      appendMessage(
+        container,
+        message.role,
+        message.content,
+        {
+          stateLabel: message.role === "assistant" ? "HISTORY" : "",
+          copyText: message.role === "assistant"
+            ? message.content
+            : "",
+        },
+      );
+    });
+  } catch {
+    // Keep the in-memory conversation when history cannot be loaded.
+  }
 }
 
 async function initializeHealth() {
@@ -490,9 +790,12 @@ mediaForm.addEventListener("submit", submitMedia);
 initializeExamples();
 initializeTextareas();
 initializeMediaTabs();
+initializePromptDialog();
 initializeHealth();
 saveThreadId("prompt", loadThreadId("prompt"));
 saveThreadId("media", loadThreadId("media"));
+loadConversationHistory("prompt");
+loadConversationHistory("media");
 
 try {
   const storedTool = localStorage.getItem("prompt-atelier-tool");

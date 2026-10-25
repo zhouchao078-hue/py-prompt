@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from langgraph.constants import END
 from pydantic import SecretStr
 
 from prompt_search_agent.config import Settings
@@ -95,3 +96,10 @@ def test_web_routes() -> None:
             "web_context": "source",
         }
     ) == "compose_prompt"
+
+    assert route_after_web_research(
+        {
+            "user_query": "test",
+            "web_context": "",
+        }
+    ) == END

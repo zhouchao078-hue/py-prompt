@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import re
 import sqlite3
 from typing import Any, Literal
 from uuid import uuid4
@@ -19,6 +20,10 @@ from prompt_search_agent.chains.generate_prompt import (
     GENERATE_SYSTEM_PROMPT,
     create_generate_prompt_chain,
 )
+from prompt_search_agent.chains.modify_prompt import (
+    MODIFY_SYSTEM_PROMPT,
+    create_modify_prompt_chain,
+)
 from prompt_search_agent.chains.parse_request import SYSTEM_PROMPT
 from prompt_search_agent.chains.rerank_prompts import RERANK_SYSTEM_PROMPT
 from prompt_search_agent.chains.summarize_conversation import (
@@ -26,10 +31,16 @@ from prompt_search_agent.chains.summarize_conversation import (
     create_summary_chain,
 )
 from prompt_search_agent.config import Settings
+from prompt_search_agent.graph.state import NO_MATCHING_PROMPT
 from prompt_search_agent.llm import create_chat_model
 from prompt_search_agent.models import IntentResult, SearchRequest, WebSource
 from prompt_search_agent.search.sqlite import SqlitePromptSearchBackend
 from prompt_search_agent.search.tokenizer import normalize_text
+from prompt_search_agent.skills import (
+    ChatSkill,
+    ChatSkillError,
+    build_chat_skill,
+)
 from prompt_search_agent.skills.prompt_generation import (
     PromptGenerationSkill,
     build_prompt_generation_skill,
@@ -52,11 +63,26 @@ from prompt_search_agent.tools import (
 
 LOGGER = logging.getLogger(__name__)
 
+MODIFY_REQUEST_PATTERN = re.compile(
+    (
+        r"(改写|修改|重写|润色|精简|缩短|翻译|"
+        r"改成.{0,12}(?:不违规|无违规|合规)|"
+        r"(?:去除|去掉|删除).{0,12}(?:版权|违规)|"
+        r"替换.{0,12}(?:角色|人物|名称|地点))"
+    ),
+    flags=re.IGNORECASE,
+)
+
 
 class PromptServiceResult(BaseModel):
     final_prompt: str | None = None
     reply: str | None = None
-    response_type: Literal["prompt", "clarification"] = "prompt"
+    response_type: Literal[
+        "prompt",
+        "clarification",
+        "message",
+        "not_found",
+    ] = "prompt"
     intent: str = "create"
     cached: bool
     generated_from_brief: bool = False
@@ -74,15 +100,19 @@ class PromptService:
         settings: Settings,
         skill: PromptGenerationSkill,
         fallback_generate_chain: Any | None = None,
+        modify_chain: Any | None = None,
         summary_chain: Any | None = None,
         intent_chain: Any | None = None,
         conversation_repo: ConversationRepository | None = None,
+        chat_skill: ChatSkill | None = None,
     ) -> None:
         self.settings = settings
         self.skill = skill
         self.fallback_generate_chain = fallback_generate_chain
+        self.modify_chain = modify_chain
         self.summary_chain = summary_chain
         self.intent_chain = intent_chain
+        self.chat_skill = chat_skill
         self.conversation_repo = conversation_repo or ConversationRepository(
             settings.prompt_db_path,
             settings.sqlite_busy_timeout_ms,
@@ -92,6 +122,7 @@ class PromptService:
             RERANK_SYSTEM_PROMPT,
             COMPOSE_SYSTEM_PROMPT,
             GENERATE_SYSTEM_PROMPT,
+            MODIFY_SYSTEM_PROMPT,
             SUMMARY_SYSTEM_PROMPT,
             INTENT_SYSTEM_PROMPT,
         )
@@ -114,11 +145,15 @@ class PromptService:
             user_query,
             conversation_context,
         )
+        intent_result = self._apply_intent_guard(
+            user_query,
+            intent_result,
+        )
 
-        if intent_result is not None and intent_result.intent in {
-            "vague_feedback",
-            "other",
-        }:
+        if (
+            intent_result is not None
+            and intent_result.intent == "vague_feedback"
+        ):
             reply = self._build_clarification_reply(intent_result)
             self._save_clarification(thread_id, user_query, reply)
             return PromptServiceResult(
@@ -126,6 +161,82 @@ class PromptService:
                 response_type="clarification",
                 intent=intent_result.intent,
                 cached=False,
+                thread_id=thread_id,
+            )
+
+        if intent_result is not None and intent_result.intent in {
+            "chat",
+            "question",
+            "cancel",
+            "other",
+        }:
+            if self.chat_skill is None:
+                reply = self._build_conversation_reply(intent_result)
+            else:
+                try:
+                    reply = self.chat_skill.invoke(
+                        user_query=user_query,
+                        intent=intent_result.intent,
+                        conversation_context=conversation_context,
+                        current_prompt=snapshot.previous_prompt or "",
+                    )
+                except (ChatSkillError, OpenAIError) as exc:
+                    LOGGER.warning("Chat reply failed: %s", exc)
+                    reply = self._build_conversation_reply(intent_result)
+
+            self._save_clarification(thread_id, user_query, reply)
+            return PromptServiceResult(
+                reply=reply,
+                response_type="message",
+                intent=intent_result.intent,
+                cached=False,
+                thread_id=thread_id,
+            )
+
+        if (
+            intent_result is not None
+            and intent_result.intent == "regenerate"
+        ):
+            final_prompt = self._regenerate_from_context(
+                user_query,
+                conversation_context,
+            )
+            self._save_turn(
+                thread_id,
+                user_query,
+                final_prompt,
+                prompt_spec_json=snapshot.prompt_spec_json,
+            )
+            return PromptServiceResult(
+                final_prompt=final_prompt,
+                response_type="prompt",
+                intent="regenerate",
+                cached=False,
+                generated_from_brief=True,
+                thread_id=thread_id,
+            )
+
+        if (
+            intent_result is not None
+            and intent_result.intent == "modify"
+        ):
+            final_prompt = self._modify_from_context(
+                user_query,
+                conversation_context,
+                snapshot.previous_prompt or "",
+            )
+            self._save_turn(
+                thread_id,
+                user_query,
+                final_prompt,
+                prompt_spec_json=snapshot.prompt_spec_json,
+            )
+            return PromptServiceResult(
+                final_prompt=final_prompt,
+                response_type="prompt",
+                intent="modify",
+                cached=False,
+                generated_from_brief=False,
                 thread_id=thread_id,
             )
 
@@ -194,6 +305,28 @@ class PromptService:
             final_prompt = result.get("final_prompt")
 
             if not final_prompt:
+                if result.get("error") == NO_MATCHING_PROMPT:
+                    reply = (
+                        "未检索到匹配提示词。"
+                        "你可以点击“添加提示词”将它加入本地提示词库。"
+                    )
+                    self._save_clarification(
+                        thread_id,
+                        user_query,
+                        reply,
+                    )
+                    return PromptServiceResult(
+                        reply=reply,
+                        response_type="not_found",
+                        intent=(
+                            intent_result.intent
+                            if intent_result is not None
+                            else "create"
+                        ),
+                        cached=False,
+                        thread_id=thread_id,
+                    )
+
                 raise PromptServiceError(
                     str(result.get("error", "Prompt generation failed"))
                 )
@@ -207,6 +340,7 @@ class PromptService:
                     "user_query": user_query,
                     "conversation_context": conversation_context,
                     "request_json": fallback_request.model_dump_json(),
+                    "variation_hint": "",
                 }
             )
 
@@ -222,7 +356,11 @@ class PromptService:
             generated_from_brief = True
 
         request = result.get("request")
-        candidates = result.get("candidates") or []
+        candidates = (
+            result.get("reranked_candidates")
+            or result.get("candidates")
+            or []
+        )
         prompt_spec_json = (
             request.model_dump_json()
             if request is not None
@@ -317,6 +455,38 @@ class PromptService:
         return None
 
     @staticmethod
+    def _apply_intent_guard(
+        user_query: str,
+        intent_result: IntentResult | None,
+    ) -> IntentResult | None:
+        if intent_result is None:
+            return None
+
+        if intent_result.intent not in {
+            "create",
+            "question",
+            "other",
+        }:
+            return intent_result
+
+        if re.search(
+            r"(不要|别|取消).{0,8}(修改|改写|润色)",
+            user_query,
+            flags=re.IGNORECASE,
+        ):
+            return intent_result
+
+        if not MODIFY_REQUEST_PATTERN.search(user_query):
+            return intent_result
+
+        return intent_result.model_copy(
+            update={
+                "intent": "modify",
+                "reason": "用户明确要求改写现有提示词",
+            }
+        )
+
+    @staticmethod
     def _build_clarification_reply(
         intent_result: IntentResult,
     ) -> str:
@@ -330,6 +500,69 @@ class PromptService:
             )
 
         return "请直接描述你想生成或调整的画面。"
+
+    @staticmethod
+    def _build_conversation_reply(
+        intent_result: IntentResult,
+    ) -> str:
+        if intent_result.assistant_reply:
+            return intent_result.assistant_reply
+
+        if intent_result.intent == "cancel":
+            return "好，这一版先保留，不改动。"
+
+        if intent_result.intent == "question":
+            return "你可以直接问当前提示词的主体、风格、镜头或画幅。"
+
+        return "我在。可以直接告诉我想生成或调整什么。"
+
+    def _regenerate_from_context(
+        self,
+        user_query: str,
+        conversation_context: str,
+    ) -> str:
+        if self.fallback_generate_chain is None:
+            raise PromptServiceError("Regeneration chain is not configured")
+
+        request_json = SearchRequest().model_dump_json()
+        final_prompt = self.fallback_generate_chain.invoke(
+            {
+                "user_query": user_query,
+                "conversation_context": conversation_context,
+                "request_json": request_json,
+                "variation_hint": (
+                    "这是重新生成请求。保持核心主体和明确约束不变，"
+                    "使用与上一版不同的构图、细节或视觉组织。"
+                ),
+            }
+        )
+
+        if not final_prompt:
+            raise PromptServiceError("Regeneration produced an empty prompt")
+
+        return final_prompt.strip()
+
+    def _modify_from_context(
+        self,
+        user_query: str,
+        conversation_context: str,
+        current_prompt: str,
+    ) -> str:
+        if self.modify_chain is None:
+            raise PromptServiceError("Modify chain is not configured")
+
+        final_prompt = self.modify_chain.invoke(
+            {
+                "user_query": user_query,
+                "conversation_context": conversation_context,
+                "current_prompt": current_prompt,
+            }
+        )
+
+        if not final_prompt:
+            raise PromptServiceError("Modify chain produced an empty prompt")
+
+        return final_prompt.strip()
 
     def _save_clarification(
         self,
@@ -420,12 +653,12 @@ class PromptService:
 
 def build_prompt_service(settings: Settings) -> PromptService:
     """Create the production prompt service."""
-
     initialize_database(
         settings.prompt_db_path,
         settings.sqlite_busy_timeout_ms,
     )
     model = create_chat_model(settings)
+    chat_skill = build_chat_skill(model)
     search_backend = SqlitePromptSearchBackend(
         settings.prompt_db_path,
         settings.sqlite_busy_timeout_ms,
@@ -447,6 +680,8 @@ def build_prompt_service(settings: Settings) -> PromptService:
         settings,
         skill,
         fallback_generate_chain=create_generate_prompt_chain(model),
+        modify_chain=create_modify_prompt_chain(model),
         summary_chain=create_summary_chain(model),
         intent_chain=create_intent_chain(model),
+        chat_skill=chat_skill,
     )

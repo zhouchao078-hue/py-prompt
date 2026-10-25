@@ -7,6 +7,7 @@ from typing import Any, cast
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_deepseek import ChatDeepSeek
 
+from prompt_search_agent.chains.context_rules import CONVERSATION_HISTORY_RULES
 from prompt_search_agent.config import Settings
 from prompt_search_agent.llm import create_chat_model
 from prompt_search_agent.models import SearchRequest
@@ -46,6 +47,8 @@ SYSTEM_PROMPT = ("""你是 AIGC 提示词检索需求解析器。
 不要编造用户没有表达的主体或场景。
 缺失的字符串字段返回 null，缺失的关键词返回空列表。
 不要回答用户，只输出结构化结果。输出结构按照我给你的这个结构进行构造。结构示例：""" + FEW_SHOT_EXAMPLES)
+SYSTEM_PROMPT += "\n\n" + CONVERSATION_HISTORY_RULES
+
 def create_parse_request_chain(model: ChatDeepSeek):
 
     prompt = ChatPromptTemplate.from_messages(

@@ -4,6 +4,7 @@ from prompt_search_agent.ingest.records import PreparedPromptRecord
 from prompt_search_agent.storage import (
     build_cache_key,
     build_prompt_version,
+    connect_database,
     delete_cached_prompt,
     get_cached_prompt,
     get_cached_sources_json,
@@ -118,3 +119,39 @@ def test_prompt_index_version_changes_after_insert(
     after = get_prompt_index_version(db_path)
 
     assert before != after
+
+
+def test_prompt_index_version_tracks_updates_and_deletes(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "prompt_index.sqlite3"
+    initialize_database(db_path)
+    insert_prompt_records(db_path, [make_record()])
+    after_insert = get_prompt_index_version(db_path)
+
+    with connect_database(db_path) as connection:
+        connection.execute(
+            """
+            UPDATE prompts
+            SET prompt_text = ?,
+                search_tokens = ?
+            WHERE prompt_id = ?
+            """,
+            ("更新后的提示词", "更新 提示词", "p001"),
+        )
+        connection.commit()
+
+    after_update = get_prompt_index_version(db_path)
+
+    with connect_database(db_path) as connection:
+        connection.execute(
+            "DELETE FROM prompts WHERE prompt_id = ?",
+            ("p001",),
+        )
+        connection.commit()
+
+    after_delete = get_prompt_index_version(db_path)
+
+    assert after_insert == "1:1:1"
+    assert after_update == "1:1:2"
+    assert after_delete == "0:0:3"

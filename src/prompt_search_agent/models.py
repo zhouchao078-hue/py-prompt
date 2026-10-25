@@ -61,11 +61,16 @@ class IntentResult(BaseModel):
     intent: Literal[
         "create",
         "modify",
+        "regenerate",
         "vague_feedback",
+        "chat",
+        "question",
+        "cancel",
         "other",
     ]
     confidence: float = Field(ge=0, le=1)
     clarification_question: str | None = None
+    assistant_reply: str | None = None
     reason: str
 
 

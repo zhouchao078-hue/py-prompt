@@ -4,13 +4,18 @@ from prompt_search_agent.ingest.extractors.xls import XlsPromptExtractor
 from prompt_search_agent.ingest.extractors.xlsx import XlsxPromptExtractor
 from prompt_search_agent.ingest.records import ImportResult
 from prompt_search_agent.ingest.transformer import prepare_prompt_records
-from prompt_search_agent.storage import initialize_database, insert_prompt_records
+from prompt_search_agent.storage import (
+    initialize_database,
+    insert_prompt_records,
+    optimize_database,
+)
 
 
 def import_prompt_workbook(
     workbook_path: Path,
     db_path: Path,
     busy_timeout_ms: int = 5000,
+    optimize: bool = True,
 ) -> ImportResult:
     suffix = workbook_path.suffix.lower()
 
@@ -29,6 +34,9 @@ def import_prompt_workbook(
         busy_timeout_ms,
     )
     duplicate_count = len(raw_records) - len(prepared_records)
+    if optimize:
+        optimize_database(db_path, busy_timeout_ms)
+
     mp = ImportResult(
         raw_count=len(raw_records),
         prepared_count=len(prepared_records),
@@ -49,4 +57,5 @@ def import_xlsx_workbook(
         workbook_path,
         db_path,
         busy_timeout_ms,
+        optimize=True,
     )

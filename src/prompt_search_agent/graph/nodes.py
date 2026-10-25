@@ -5,7 +5,10 @@ TODO: Implement parse, search, and render nodes.
 
 from pydantic import ValidationError
 
-from prompt_search_agent.graph.state import AgentState
+from prompt_search_agent.graph.state import (
+    NO_MATCHING_PROMPT,
+    AgentState,
+)
 from prompt_search_agent.models import SearchRequest, WebSource
 from prompt_search_agent.search.base import PromptSearchBackend
 
@@ -73,7 +76,8 @@ def build_rerank_prompts_node(rerank_chain):
         if not candidates:
             return {
                 "reranked_candidates": [],
-                "needs_generation": True,
+                "needs_generation": False,
+                "error": NO_MATCHING_PROMPT,
             }
 
         candidates_text = "\n\n".join(
@@ -123,6 +127,13 @@ def build_rerank_prompts_node(rerank_chain):
                 if prompt_id in candidates_by_id
             ][:3]
 
+            if not selected:
+                return {
+                    "reranked_candidates": [],
+                    "needs_generation": False,
+                    "error": NO_MATCHING_PROMPT,
+                }
+
             return {
                 "reranked_candidates": selected,
                 "needs_generation": parsed.needs_generation,
@@ -149,7 +160,8 @@ def build_web_research_node(
             return {
                 "web_context": "",
                 "web_sources": [],
-                "needs_generation": True,
+                "needs_generation": False,
+                "error": NO_MATCHING_PROMPT,
             }
 
         search_results = search_response.get("results") or []
@@ -213,7 +225,8 @@ def build_web_research_node(
             return {
                 "web_context": "",
                 "web_sources": [],
-                "needs_generation": True,
+                "needs_generation": False,
+                "error": NO_MATCHING_PROMPT,
             }
 
         web_context = "\n\n".join(
@@ -247,10 +260,11 @@ def build_compose_prompts_node(compose_chain):
             or state.get("candidates")
             or []
         )
+        web_context = state.get("web_context", "")
         if request is None:
             return {"error": "Missing request for prompt composition"}
-        if not candidates:
-            return {"error": "No matching prompt"}
+        if not candidates and not web_context:
+            return {"error": NO_MATCHING_PROMPT}
         request_json = request.model_dump_json()
         candidates_text = "\n\n".join(
             candidate.prompt_text for candidate in candidates[:3]
@@ -262,7 +276,7 @@ def build_compose_prompts_node(compose_chain):
                     "conversation_context",
                     "",
                 ),
-                "web_context": state.get("web_context", ""),
+                "web_context": web_context,
                 "request_json": request_json,
                 "candidates_text": candidates_text,
             }

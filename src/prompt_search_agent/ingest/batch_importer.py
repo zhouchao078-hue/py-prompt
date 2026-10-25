@@ -7,6 +7,7 @@ from xlrd.biffh import XLRDError
 
 from prompt_search_agent.ingest.importer import import_prompt_workbook
 from prompt_search_agent.ingest.records import BatchImportResult, ImportFailure
+from prompt_search_agent.storage import optimize_database
 
 
 def import_excel_directory(
@@ -36,6 +37,7 @@ def import_excel_directory(
                 file_path,
                 db_path,
                 busy_timeout_ms,
+                optimize=False,
             )
         except (
             OSError,
@@ -56,6 +58,10 @@ def import_excel_directory(
         prepared_count += result.prepared_count
         inserted_count += result.inserted_count
         duplicate_count += result.duplicate_count
+
+    if successful_files > 0:
+        optimize_database(db_path, busy_timeout_ms)
+
     return BatchImportResult(
         file_count=len(files),
         successful_files=successful_files,

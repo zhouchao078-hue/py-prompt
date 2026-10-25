@@ -66,6 +66,8 @@ def test_initialize_database_creates_tables(tmp_path: Path) -> None:
 
     assert "prompts" in table_names
     assert "prompts_fts" in table_names
+    assert "prompt_index_state" in table_names
+    assert "generated_images" in table_names
 
 
 def test_insert_and_fts_search_chinese_token(tmp_path: Path) -> None:

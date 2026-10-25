@@ -156,6 +156,58 @@ class ConversationRepository:
             recent_messages=recent_messages,
         )
 
+    def list_messages(
+        self,
+        thread_id: str,
+        limit: int = 500,
+    ) -> list[ConversationMessage]:
+        self.ensure_conversation(thread_id)
+        safe_limit = max(1, min(limit, 1000))
+
+        with closing(
+            connect_database(self.db_path, self.busy_timeout_ms)
+        ) as connection:
+            rows = connection.execute(
+                """
+                SELECT id, role, content
+                FROM (
+                    SELECT id, role, content
+                    FROM conversation_messages
+                    WHERE thread_id = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                )
+                ORDER BY id
+                """,
+                (thread_id, safe_limit),
+            ).fetchall()
+
+        return [
+            ConversationMessage(
+                id=int(row["id"]),
+                role=str(row["role"]),
+                content=str(row["content"]),
+            )
+            for row in rows
+        ]
+
+    def get_summary(self, thread_id: str) -> str:
+        self.ensure_conversation(thread_id)
+
+        with closing(
+            connect_database(self.db_path, self.busy_timeout_ms)
+        ) as connection:
+            row = connection.execute(
+                """
+                SELECT summary
+                FROM conversations
+                WHERE thread_id = ?
+                """,
+                (thread_id,),
+            ).fetchone()
+
+        return str(row["summary"] or "") if row is not None else ""
+
     def update_after_turn(
         self,
         thread_id: str,

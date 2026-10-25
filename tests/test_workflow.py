@@ -1,5 +1,6 @@
 from typing import Any
 
+from prompt_search_agent.graph.state import NO_MATCHING_PROMPT
 from prompt_search_agent.graph.workflow import build_workflow
 from prompt_search_agent.models import (
     PromptCandidate,
@@ -108,6 +109,32 @@ class FakeGenerateChain:
     ) -> str:
         self.calls.append(input_)
         return self.output
+
+
+class FakeWebSearchTool:
+    def invoke(self, input_: dict[str, str]) -> dict[str, Any]:
+        return {
+            "results": [
+                {
+                    "title": "Visual reference",
+                    "url": "https://example.com/reference",
+                    "content": "A detailed visual reference.",
+                }
+            ]
+        }
+
+
+class FakeWebFetchTool:
+    def invoke(self, input_: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "results": [
+                {
+                    "title": "Visual reference",
+                    "url": "https://example.com/reference",
+                    "raw_content": "Useful visual details from the web.",
+                }
+            ]
+        }
 
 
 def make_candidate(number: int) -> PromptCandidate:
@@ -230,7 +257,7 @@ def test_workflow_stops_when_parse_fails() -> None:
     assert generate_chain.calls == []
 
 
-def test_workflow_sets_needs_generation_when_no_candidates() -> None:
+def test_workflow_returns_not_found_when_no_candidates() -> None:
     request = SearchRequest(subject="不存在的角色")
     rerank_chain = FakeRerankChain(
         selected_ids=[],
@@ -250,8 +277,36 @@ def test_workflow_sets_needs_generation_when_no_candidates() -> None:
 
     assert result["candidates"] == []
     assert result["reranked_candidates"] == []
-    assert result["needs_generation"] is True
-    assert result["final_prompt"] == "直接生成的雪山小猫提示词"
-    assert result["generated_from_brief"] is True
+    assert result["needs_generation"] is False
+    assert result["error"] == NO_MATCHING_PROMPT
+    assert "final_prompt" not in result
     assert compose_chain.calls == []
-    assert "user_query" in generate_chain.calls[0]
+    assert generate_chain.calls == []
+
+
+def test_workflow_uses_web_research_before_not_found() -> None:
+    request = SearchRequest(subject="rare visual subject")
+    rerank_chain = FakeRerankChain(
+        selected_ids=[],
+        needs_generation=True,
+    )
+    compose_chain = FakeComposeChain("web informed final prompt")
+    generate_chain = FakeGenerateChain()
+    workflow = build_workflow(
+        FakeParseChain(request),
+        FakeSearchBackend([]),
+        rerank_chain,
+        compose_chain,
+        generate_chain,
+        web_search_tool=FakeWebSearchTool(),
+        web_fetch_tool=FakeWebFetchTool(),
+    )
+
+    result = workflow.invoke(
+        {"user_query": "rare visual subject"}
+    )
+
+    assert result["final_prompt"] == "web informed final prompt"
+    assert len(result["web_sources"]) == 1
+    assert "Useful visual details" in compose_chain.calls[0]["web_context"]
+    assert generate_chain.calls == []

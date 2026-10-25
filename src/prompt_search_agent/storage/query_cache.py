@@ -41,21 +41,27 @@ def get_prompt_index_version(
     db_path: Path,
     busy_timeout_ms: int = 5000,
 ) -> str:
-    """Return a stable version based only on prompt rows."""
+    """Return a stable O(1) version maintained by SQLite triggers."""
 
     with closing(
         connect_database(db_path, busy_timeout_ms)
     ) as connection:
         row = connection.execute(
             """
-            SELECT
-                COUNT(*) AS prompt_count,
-                COALESCE(MAX(id), 0) AS max_id
-            FROM prompts
+            SELECT prompt_count, max_prompt_id, revision
+            FROM prompt_index_state
+            WHERE id = 1
             """
         ).fetchone()
 
-    return f"{row['prompt_count']}:{row['max_id']}"
+    if row is None:
+        return "0:0:0"
+
+    return (
+        f"{row['prompt_count']}:"
+        f"{row['max_prompt_id']}:"
+        f"{row['revision']}"
+    )
 
 
 def get_cached_prompt(

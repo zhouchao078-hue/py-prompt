@@ -4,6 +4,8 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_deepseek import ChatDeepSeek
 
+from prompt_search_agent.chains.context_rules import CONVERSATION_HISTORY_RULES
+
 SUMMARY_SYSTEM_PROMPT = """你是 AIGC 创作会话的上下文压缩器。
 
 把较早的对话压缩成任务型摘要，只保留继续创作所需的信息。
@@ -25,6 +27,7 @@ SUMMARY_SYSTEM_PROMPT = """你是 AIGC 创作会话的上下文压缩器。
 新旧约束冲突时，保留最新明确指令。
 输出不超过 800 个中文字符，只输出摘要正文。
 """
+SUMMARY_SYSTEM_PROMPT += "\n\n" + CONVERSATION_HISTORY_RULES
 
 
 def create_summary_chain(model: ChatDeepSeek):

@@ -4,6 +4,8 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_deepseek import ChatDeepSeek
 
+from prompt_search_agent.chains.context_rules import CONVERSATION_HISTORY_RULES
+
 GENERATE_SYSTEM_PROMPT = """你是 AIGC 提示词生成器。
 
 根据用户原始需求和结构化检索条件，生成一段可以直接用于图片或视频生成的提示词。
@@ -19,6 +21,7 @@ GENERATE_SYSTEM_PROMPT = """你是 AIGC 提示词生成器。
 - 只输出一段完整、连贯、可直接复制使用的提示词
 - 用户原始需求优先于结构化字段
 """
+GENERATE_SYSTEM_PROMPT += "\n\n" + CONVERSATION_HISTORY_RULES
 
 
 def create_generate_prompt_chain(model: ChatDeepSeek):
@@ -32,7 +35,8 @@ def create_generate_prompt_chain(model: ChatDeepSeek):
                 (
                     "对话上下文：\n{conversation_context}\n\n"
                     "用户原始需求：\n{user_query}\n\n"
-                    "结构化检索条件：\n{request_json}"
+                    "结构化检索条件：\n{request_json}\n\n"
+                    "本轮变化要求：\n{variation_hint}"
                 ),
             ),
         ]

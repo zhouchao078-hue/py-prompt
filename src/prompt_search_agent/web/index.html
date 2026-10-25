@@ -84,9 +84,17 @@
           <p class="topbar-kicker" id="topbarKicker">PROMPT STUDIO</p>
           <h1 class="topbar-title" id="topbarTitle">提示词工坊</h1>
         </div>
-        <div class="topbar-meta">
-          <span class="meta-label">LOCAL LIBRARY</span>
-          <span class="meta-value" id="promptCount">LOCAL INDEX</span>
+        <div class="topbar-actions">
+          <button class="add-prompt-button" id="addPromptButton" type="button">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            </svg>
+            添加提示词
+          </button>
+          <div class="topbar-meta">
+            <span class="meta-label">LOCAL LIBRARY</span>
+            <span class="meta-value" id="promptCount">LOCAL INDEX</span>
+          </div>
         </div>
       </header>
 
@@ -197,9 +205,8 @@
                   <span>画幅</span>
                   <select id="aspectRatio">
                     <option value="2:3">2:3 竖版</option>
-                    <option value="16:9">16:9 横版</option>
+                    <option value="3:2">3:2 横版</option>
                     <option value="1:1">1:1 方形</option>
-                    <option value="9:16">9:16 手机</option>
                   </select>
                 </label>
               </div>
@@ -219,7 +226,10 @@
                 <div class="preview-result" id="previewResult" hidden>
                   <div class="preview-result-head">
                     <span id="previewType">IMAGE PROMPT</span>
-                    <span class="preview-status">PROVIDER NOT CONNECTED</span>
+                    <span class="preview-status" id="previewStatus">PROMPT ONLY</span>
+                  </div>
+                  <div class="preview-image-wrap" id="previewImageWrap" hidden>
+                    <img id="previewImage" alt="" />
                   </div>
                   <p id="previewPrompt"></p>
                 </div>
@@ -254,7 +264,7 @@
                   placeholder="例如：一只机械鲸鱼穿过火星沙尘暴，电影感..."
                 ></textarea>
                 <div class="composer-actions">
-                  <span class="provider-note">GENERATION PROVIDER · PENDING</span>
+                  <span class="provider-note" id="providerNote">GENERATION PROVIDER · PENDING</span>
                   <button class="send-button" type="submit" aria-label="发送影像需求">
                     <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
                       <path d="M4 12h15M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
@@ -268,6 +278,45 @@
       </div>
     </main>
   </div>
+
+  <dialog class="prompt-dialog" id="promptDialog" aria-labelledby="promptDialogTitle">
+    <form class="prompt-dialog__panel" id="addPromptForm">
+      <header class="prompt-dialog__header">
+        <span class="eyebrow">LOCAL LIBRARY</span>
+        <h2 id="promptDialogTitle">添加提示词</h2>
+      </header>
+
+      <label class="prompt-dialog__field">
+        <span>提示词内容</span>
+        <textarea
+          id="addPromptText"
+          rows="7"
+          maxlength="4000"
+          placeholder="输入完整提示词..."
+          required
+        ></textarea>
+      </label>
+
+      <label class="prompt-dialog__field">
+        <span>分类（可选）</span>
+        <input
+          id="addPromptCategory"
+          type="text"
+          maxlength="100"
+          placeholder="例如：人物、风景、产品"
+        />
+      </label>
+
+      <div class="prompt-dialog__actions">
+        <button class="dialog-button dialog-button--secondary" id="cancelPromptDialog" type="button">
+          取消
+        </button>
+        <button class="dialog-button dialog-button--primary" id="savePromptButton" type="submit">
+          保存到提示词库
+        </button>
+      </div>
+    </form>
+  </dialog>
 
   <script src="/static/app.js" defer></script>
 </body>

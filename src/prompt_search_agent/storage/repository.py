@@ -1,8 +1,20 @@
 from contextlib import closing
 from pathlib import Path
 
-from prompt_search_agent.ingest.records import PreparedPromptRecord
-from prompt_search_agent.storage import connect_database
+from pydantic import BaseModel
+
+from prompt_search_agent.ingest.records import (
+    PreparedPromptRecord,
+    RawPromptRecord,
+)
+from prompt_search_agent.ingest.transformer import prepare_prompt_records
+from prompt_search_agent.storage.database import connect_database
+
+
+class AddedPromptRecord(BaseModel):
+    prompt_id: str
+    prompt_text: str
+    inserted: bool
 
 
 def insert_prompt_records(db_path: Path,records: list[PreparedPromptRecord],busy_timeout_ms: int = 5000,) -> int:
@@ -37,3 +49,37 @@ def insert_prompt_records(db_path: Path,records: list[PreparedPromptRecord],busy
             insert_count += cursor.rowcount
 
     return insert_count
+
+
+def add_prompt_text(
+    db_path: Path,
+    prompt_text: str,
+    category: str | None = None,
+    busy_timeout_ms: int = 5000,
+) -> AddedPromptRecord | None:
+    prepared = prepare_prompt_records(
+        [
+            RawPromptRecord(
+                prompt_text=prompt_text,
+                category=(category or "").strip() or "用户添加",
+                source_file="manual",
+                source_sheet="manual",
+                source_row=0,
+            )
+        ]
+    )
+
+    if not prepared:
+        return None
+
+    record = prepared[0]
+    inserted = insert_prompt_records(
+        db_path,
+        [record],
+        busy_timeout_ms,
+    )
+    return AddedPromptRecord(
+        prompt_id=record.prompt_id,
+        prompt_text=record.prompt_text,
+        inserted=inserted > 0,
+    )
