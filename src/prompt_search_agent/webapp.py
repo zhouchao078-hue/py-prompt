@@ -254,7 +254,7 @@ def _require_thread_owner(
     request: Request,
     secret: str,
 ) -> None:
-    """无 thread_id 视为新会话；带了就必须有匹配签名，防越权读写。"""
+    """读取历史必须验签：没有签名就 403，防止翻别人的对话。"""
     if not thread_id:
         return
 
@@ -262,6 +262,32 @@ def _require_thread_owner(
 
     if not verify_thread_id(thread_id, token, secret):
         raise HTTPException(status_code=403, detail="无权访问该会话")
+
+
+def _resolve_thread_id(
+    thread_id: str | None,
+    request: Request,
+    secret: str,
+) -> str | None:
+    """写入路径：不信任没有签名的 thread_id，直接当作新会话。
+
+    客户端本地存着旧 thread_id 但没有对应签名时（升级、清缓存、换浏览器），
+    严格校验会让它永远 403。这里改成丢弃这个 id 并新开会话 —— 攻击者既
+    写不进别人的历史，也读不到，安全边界不变。
+    """
+    if not thread_id:
+        return None
+
+    token = request.headers.get(THREAD_TOKEN_HEADER, "")
+
+    if verify_thread_id(thread_id, token, secret):
+        return thread_id
+
+    LOGGER.warning(
+        "忽略无签名的会话 ID，按新会话处理 trace_id=%s",
+        getattr(request.state, "trace_id", "-"),
+    )
+    return None
 
 
 def _build_prompt_response(
@@ -760,13 +786,13 @@ def create_app(
         ],
     ) -> PromptResponse:
         secret = _thread_secret(request)
-        _require_thread_owner(payload.thread_id, request, secret)
+        thread_id = _resolve_thread_id(payload.thread_id, request, secret)
 
         try:
             result = await _generate_with_breaker(
                 service,
                 payload.message,
-                payload.thread_id,
+                thread_id,
                 None,
                 request.app.state.generation_limiter,
                 request.app.state.generation_breaker,
@@ -811,7 +837,7 @@ def create_app(
     ) -> StreamingResponse:
         """SSE 版本：边跑边推阶段，避免前端干等 6~10 秒。"""
         secret = _thread_secret(request)
-        _require_thread_owner(payload.thread_id, request, secret)
+        thread_id = _resolve_thread_id(payload.thread_id, request, secret)
 
         trace_id = getattr(request.state, "trace_id", "-")
         limiter: CapacityLimiter = request.app.state.generation_limiter
@@ -837,7 +863,7 @@ def create_app(
                 result = await _generate_with_breaker(
                     service,
                     payload.message,
-                    payload.thread_id,
+                    thread_id,
                     on_stage,
                     limiter,
                     breaker,
@@ -943,13 +969,13 @@ def create_app(
         ],
     ) -> MediaResponse:
         secret = _thread_secret(request)
-        _require_thread_owner(payload.thread_id, request, secret)
+        thread_id = _resolve_thread_id(payload.thread_id, request, secret)
 
         try:
             result = await _generate_with_breaker(
                 service,
                 payload.message,
-                payload.thread_id,
+                thread_id,
                 None,
                 request.app.state.generation_limiter,
                 request.app.state.generation_breaker,

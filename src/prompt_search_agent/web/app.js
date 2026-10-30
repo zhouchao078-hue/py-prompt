@@ -157,6 +157,20 @@ function saveThreadId(tool, threadId, threadToken) {
   }
 }
 
+function dropStaleThread(tool) {
+  // 清掉本地残留的会话，静默开一个新的（不打扰用户）
+  try {
+    localStorage.removeItem(`prompt-atelier-thread-${tool}`);
+    localStorage.removeItem(`prompt-atelier-thread-token-${tool}`);
+  } catch {
+    // 存储不可用时只清内存状态
+  }
+
+  state.threadIds[tool] = "";
+  state.threadTokens[tool] = "";
+  saveThreadId(tool, loadThreadId(tool), "");
+}
+
 function resetThread(tool) {
   try {
     localStorage.removeItem(`prompt-atelier-thread-${tool}`);
@@ -189,7 +203,8 @@ async function deleteConversation(tool) {
       },
     );
 
-    if (!response.ok && response.status !== 404) {
+    // 403 说明本地会话已经不可访问（签名过期/缺失），当作已删除处理
+    if (!response.ok && response.status !== 404 && response.status !== 403) {
       throw new Error("删除失败，请稍后再试。");
     }
   }
@@ -1095,6 +1110,14 @@ async function loadConversationHistory(tool) {
       `/api/history/${encodeURIComponent(threadId)}?limit=500`,
       { headers: authHeaders(threadHeaders(tool)) },
     );
+
+    if (response.status === 403) {
+      // 本地留着的 thread_id 没有对应签名（旧版本残留 / 清过缓存 / 换了密钥），
+      // 读不回来就换一个新会话，别让用户卡在错误里。
+      dropStaleThread(tool);
+      return;
+    }
+
     if (!response.ok) {
       return;
     }

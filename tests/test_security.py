@@ -158,7 +158,11 @@ def test_history_requires_matching_thread_token(tmp_path: Path) -> None:
     assert allowed.status_code == 200
 
 
-def test_prompt_rejects_foreign_thread_id(tmp_path: Path) -> None:
+def test_prompt_with_foreign_thread_id_starts_new_session(tmp_path: Path) -> None:
+    """写入路径不信任没有签名的 thread_id：丢弃它并新开会话，而不是 403。
+
+    否则老客户端（本地存着旧 thread_id、没有签名）会永久卡死。
+    """
     settings = build_settings(tmp_path)
 
     with build_client(settings) as client:
@@ -168,7 +172,42 @@ def test_prompt_rejects_foreign_thread_id(tmp_path: Path) -> None:
             headers={"Authorization": f"Bearer {ACCESS_CODE}"},
         )
 
-    assert response.status_code == 403
+    assert response.status_code == 200
+
+    data = response.json()
+    # 请求里那个别人的会话 ID 被丢弃了
+    assert data["thread_id"] != "someone-else"
+    # 返回的新会话带着可用签名
+    assert data["thread_token"] == sign_thread_id(
+        data["thread_id"],
+        THREAD_SECRET,
+    )
+
+
+def test_foreign_thread_id_does_not_reach_that_conversation(
+    tmp_path: Path,
+) -> None:
+    """丢弃是安全的：写不进别人的会话，也读不到别人的历史。"""
+    settings = build_settings(tmp_path)
+    repo = ConversationRepository(settings.prompt_db_path)
+    repo.append_message("victim-thread", "user", "别人的私密对话")
+
+    with build_client(settings) as client:
+        client.post(
+            "/api/prompt",
+            json={"message": "雪夜白猫", "thread_id": "victim-thread"},
+            headers={"Authorization": f"Bearer {ACCESS_CODE}"},
+        )
+        leak = client.get(
+            "/api/history/victim-thread",
+            headers={"Authorization": f"Bearer {ACCESS_CODE}"},
+        )
+
+    # 没签名依然读不到别人的历史
+    assert leak.status_code == 403
+    # 原文也没有被这次请求污染
+    messages = repo.list_messages("victim-thread")
+    assert [item.content for item in messages] == ["别人的私密对话"]
 
 
 def test_prompt_accepts_own_thread_id(tmp_path: Path) -> None:
