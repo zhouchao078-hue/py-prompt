@@ -1,0 +1,48 @@
+name: eval
+
+# 全量评测要打真实模型，不在每个 PR 上跑。
+# 触发：手动，或每周一凌晨。
+
+on:
+  workflow_dispatch:
+    inputs:
+      bucket:
+        description: "只跑某个桶（compose/aspect/longtail/modify/web/intent），留空跑全部"
+        required: false
+        default: ""
+  schedule:
+    - cron: "0 3 * * 1"
+
+jobs:
+  evaluate:
+    name: 全量评测
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync --frozen
+
+      - name: 跑评测
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          # schedule 触发时 inputs 为空，表达式会退化成空串
+          BUCKET: ${{ inputs.bucket }}
+        run: |
+          if [ -n "$BUCKET" ]; then
+            uv run python scripts/eval/run_eval.py --bucket "$BUCKET"
+          else
+            uv run python scripts/eval/run_eval.py
+          fi
+
+      - name: 上传报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: data/eval/reports/
+          retention-days: 30

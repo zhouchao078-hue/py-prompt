@@ -1,12 +1,28 @@
-name: ci
+name: pipeline
+
+# 提交 → 质量门 → 镜像 → 部署 → 冒烟 → 失败自动回滚
+#
+# PR：只跑到镜像构建（不推送、不部署）
+# main：构建并推送镜像，然后部署到服务器并冒烟
+# 手动：workflow_dispatch 可单独重跑
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   quality:
+    name: 质量门
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,33 +31,142 @@ jobs:
         with:
           enable-cache: true
 
-      - run: uv sync --frozen
+      - name: 安装依赖
+        run: uv sync --frozen
+
       - name: Lint
         run: uv run ruff check .
-      - name: Typecheck
+
+      - name: 类型检查
         run: uv run pyright
-      - name: Test
+
+      - name: 单元与集成测试
         run: uv run pytest -q
+
+      - name: 评测集静态校验
+        run: uv run python scripts/eval/check_cases.py
 
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: Check frontend syntax
+
+      - name: 前端语法
         run: node --check src/prompt_search_agent/web/app.js
 
+      - name: compose 配置可解析
+        # compose 里 env_file 指向 .env，CI 没有这个文件，先按模板造一个
+        run: |
+          cp .env.example .env
+          docker compose config >/dev/null
+
   image:
+    name: 构建镜像
     needs: quality
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      ref: ${{ steps.meta.outputs.ref }}
     steps:
       - uses: actions/checkout@v4
 
+      - id: meta
+        name: 计算镜像标签
+        run: echo "ref=${REGISTRY}/${IMAGE_NAME}:${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build image
+      - name: 登录镜像仓库
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 构建并推送
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: false
-          tags: prompt-atelier:ci
+          # PR 只验证能构建，不占用镜像仓库
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.ref }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy:
+    name: 部署并冒烟
+    needs: image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查部署密钥
+        id: guard
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          if [ -z "$SSH_HOST" ]; then
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+            echo "未配置 SSH_HOST，跳过部署（仅构建镜像）"
+          else
+            echo "skip=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 准备 SSH
+        if: steps.guard.outputs.skip == '0'
+        env:
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: 服务器端切换镜像
+        if: steps.guard.outputs.skip == '0'
+        env:
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          APP_DIR: ${{ secrets.APP_DIR }}
+          IMAGE_REF: ${{ needs.image.outputs.ref }}
+        run: |
+          scp -i ~/.ssh/id_ed25519 deploy/remote-deploy.sh \
+            "$SSH_USER@$SSH_HOST:/tmp/remote-deploy.sh"
+          ssh -i ~/.ssh/id_ed25519 "$SSH_USER@$SSH_HOST" \
+            "APP_DIR='${APP_DIR:-/opt/prompt-atelier}' bash /tmp/remote-deploy.sh '$IMAGE_REF'"
+
+      - name: 线上冒烟
+        id: smoke
+        if: steps.guard.outputs.skip == '0'
+        env:
+          BASE: ${{ secrets.PUBLIC_URL }}
+          TOKEN: ${{ secrets.DEMO_ACCESS_CODE }}
+        run: bash scripts/smoke.sh
+
+      # 只有"切换成功但冒烟没过"才需要再回滚一次。
+      # 切换失败时 remote-deploy.sh 已经自己回滚过了，这里不能重复回退。
+      - name: 冒烟失败则回滚
+        if: failure() && steps.smoke.outcome == 'failure'
+        env:
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          APP_DIR: ${{ secrets.APP_DIR }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 "$SSH_USER@$SSH_HOST" \
+            "APP_DIR='${APP_DIR:-/opt/prompt-atelier}' bash /tmp/remote-deploy.sh --rollback"
+
+      - name: 摘要
+        if: always() && steps.guard.outputs.skip == '0'
+        run: |
+          {
+            echo "### 部署结果"
+            echo ""
+            echo "- 镜像：${{ needs.image.outputs.ref }}"
+            echo "- 站点：${{ secrets.PUBLIC_URL }}"
+            echo "- 版本：\`$(curl -fsS "${{ secrets.PUBLIC_URL }}/api/version" || echo 取不到)\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -33,7 +33,11 @@ from prompt_search_agent.evaluation import (
 from prompt_search_agent.services.prompt_service import (
     build_prompt_service,
 )
-from prompt_search_agent.storage import get_prompt_index_version
+from prompt_search_agent.storage import (
+    get_prompt_index_version,
+    import_seed_if_empty,
+    initialize_database,
+)
 
 CASES_PATH = PROJECT_ROOT / "data" / "eval" / "cases.jsonl"
 BASELINE_PATH = PROJECT_ROOT / "data" / "eval" / "baseline.json"
@@ -191,6 +195,20 @@ def main() -> int:
         cases = cases[: args.limit]
 
     settings = Settings()
+    initialize_database(
+        settings.prompt_db_path,
+        settings.sqlite_busy_timeout_ms,
+    )
+    # CI 里没有本地索引库，先按 seed 还原，否则检索全空、路由指标失真。
+    imported = import_seed_if_empty(
+        settings.prompt_db_path,
+        settings.seed_file,
+        settings.sqlite_busy_timeout_ms,
+    )
+
+    if imported:
+        print(f"已从 seed 还原提示词库：{imported} 条")
+
     tavily_ready = settings.tavily_api_key is not None
     service = build_prompt_service(settings)
 

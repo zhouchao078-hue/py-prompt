@@ -316,6 +316,18 @@ curl -s localhost:8000/api/version   # 核对当前 commit
 BASE=https://你的域名 TOKEN=你的口令 ./scripts/smoke.sh
 ```
 
+### 流水线
+
+`git push` → 质量门（ruff / pyright / pytest / 评测集校验 / 前端语法 / compose 配置）
+→ 构建并推送镜像 → 部署到服务器 → 线上冒烟 → **失败自动回滚**。
+
+```bash
+bash scripts/check.sh      # 本地跑一遍与 CI 相同的质量门
+```
+
+评测有独立工作流（手动触发或每周一），因为它要打真实模型、几分钟且花钱。
+Secrets 配置与回滚细节见 [docs/pipeline.md](docs/pipeline.md)。
+
 ## 数据与密钥
 
 - `.env` 已被 `.gitignore` 忽略。

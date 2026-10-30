@@ -46,3 +46,8 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.pyright]
+# 让 pyright 自己找到虚拟环境，CI 里不必再传 --pythonpath
+venvPath = "."
+venv = ".venv"

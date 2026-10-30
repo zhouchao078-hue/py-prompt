@@ -6,17 +6,23 @@ from pathlib import Path
 
 import jieba
 
+LOGGER = logging.getLogger(__name__)
+
 DEFAULT_USERDICT_PATH = (
     Path(__file__).parents[3] / "data" / "userdict.txt"
 )
 @lru_cache(maxsize=1)
 def _initialize_jieba(userdict_path: Path = DEFAULT_USERDICT_PATH) -> None:
-    if not userdict_path.exists():
-        raise FileNotFoundError(
-            f"jieba user dictionary not found:{userdict_path}"
-        )
     jieba.setLogLevel(logging.ERROR)
-    jieba.load_userdict(str(userdict_path))
+
+    if userdict_path.exists():
+        jieba.load_userdict(str(userdict_path))
+    else:
+        # 词典漏打包不该让整条检索链路瘫痪，退回默认词典并告警。
+        LOGGER.warning(
+            "jieba 用户词典不存在，使用默认词典: %s", userdict_path
+        )
+
     jieba.initialize()
 def normalize_text(text: str) -> str:
     text = unicodedata.normalize("NFC", text)
