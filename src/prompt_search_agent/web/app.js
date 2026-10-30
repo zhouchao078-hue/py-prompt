@@ -811,19 +811,25 @@ async function generateFromPrompt(prompt) {
 
   activateImageMode();
   switchTool("media");
-  appendMessage(
-    mediaMessages,
-    "user",
-    "直接使用当前提示词生成图片",
-  );
+
+  // 提示词必须一起带过来：填进输入框、显示在预览区。
+  // 生图要等几十秒，只给一个转圈会让人以为提示词丢了。
+  mediaInput.value = prompt;
+  resizeTextarea(mediaInput);
+
+  appendMessage(mediaMessages, "user", prompt);
   setBusy("media", true);
-  previewEmpty.hidden = false;
-  previewResult.hidden = true;
+
+  previewEmpty.hidden = true;
+  previewResult.hidden = false;
   previewResult.classList.remove("has-image");
   previewImageWrap.hidden = true;
   previewImage.removeAttribute("src");
-  previewEmptyLabel.textContent = "正在使用当前提示词生成图片…";
+  previewType.textContent = "IMAGE PROMPT";
+  previewStatus.textContent = "RENDERING";
+  previewPrompt.textContent = prompt;
   providerNote.textContent = "GENERATION PROVIDER · WORKING";
+
   const typing = appendTyping(mediaMessages, "RENDERING");
 
   try {
@@ -847,12 +853,15 @@ async function generateFromPrompt(prompt) {
     );
   } catch (error) {
     typing.remove();
-    previewEmpty.hidden = false;
-    previewResult.hidden = true;
+    // 失败也把提示词留在预览区，用户可以复制或改完再试
+    previewEmpty.hidden = true;
+    previewResult.hidden = false;
     previewResult.classList.remove("has-image");
     previewImageWrap.hidden = true;
     previewImage.removeAttribute("src");
-    previewEmptyLabel.textContent = "当前提示词未能生成图片。";
+    previewType.textContent = "IMAGE PROMPT";
+    previewStatus.textContent = "PROMPT ONLY";
+    previewPrompt.textContent = prompt;
     providerNote.textContent = "GENERATION PROVIDER · ERROR";
     appendMessage(
       mediaMessages,
