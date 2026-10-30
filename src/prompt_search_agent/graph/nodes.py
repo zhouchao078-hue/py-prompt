@@ -1,7 +1,7 @@
-"""LangGraph node implementations.
+"""LangGraph node implementations."""
 
-TODO: Implement parse, search, and render nodes.
-"""
+import logging
+import time
 
 from pydantic import ValidationError
 
@@ -11,9 +11,30 @@ from prompt_search_agent.graph.state import (
 )
 from prompt_search_agent.models import SearchRequest, WebSource
 from prompt_search_agent.search.base import PromptSearchBackend
+from prompt_search_agent.streaming import invoke_with_tokens, token_sink
+
+LOGGER = logging.getLogger(__name__)
 
 PARSE_ATTEMPTS = 3
 RERANK_ATTEMPTS = 2
+
+# 重排判定"没有候选满足核心需求"时，若检索分数够高，仍把 top 候选交给组装。
+# 理由：候选里多余的次要元素由 compose 剔除，但直接丢掉已检索到的资产
+# 会让"组装"退化成本文本生成（实测 c002 就是这样丢了 20 条候选）。
+RERANK_FALLBACK_MIN_SCORE = 0.5
+RERANK_FALLBACK_TOP_K = 2
+
+
+def _retrieval_fallback(candidates: list) -> list:
+    if not candidates:
+        return []
+
+    top = candidates[0]
+
+    if top.relevance_score < RERANK_FALLBACK_MIN_SCORE:
+        return []
+
+    return candidates[:RERANK_FALLBACK_TOP_K]
 
 def build_parse_request_node(parse_chain):
     def analysis_user_input(state:AgentState) -> dict:
@@ -128,6 +149,19 @@ def build_rerank_prompts_node(rerank_chain):
             ][:3]
 
             if not selected:
+                fallback = _retrieval_fallback(candidates)
+
+                if fallback:
+                    LOGGER.info(
+                        "重排未选中候选，按检索分数兜底 %s 条（top score=%s）",
+                        len(fallback),
+                        fallback[0].relevance_score,
+                    )
+                    return {
+                        "reranked_candidates": fallback,
+                        "needs_generation": True,
+                    }
+
                 return {
                     "reranked_candidates": [],
                     "needs_generation": False,
@@ -149,12 +183,20 @@ def build_web_research_node(
     web_fetch_tool,
     max_sources: int = 3,
     max_chars: int = 2500,
+    budget_seconds: float = 8.0,
 ):
     def web_research_node(state: AgentState) -> dict:
+        started = time.monotonic()
         user_query = state["user_query"]
-        search_response = web_search_tool.invoke(
-            {"query": user_query}
-        )
+
+        # 联网是增强不是依赖：Tavily 挂了要退回本地结果，而不是整单失败。
+        try:
+            search_response = web_search_tool.invoke(
+                {"query": user_query}
+            )
+        except Exception:
+            LOGGER.warning("联网检索失败，退回本地结果", exc_info=True)
+            return {"web_context": "", "web_sources": []}
 
         if not isinstance(search_response, dict):
             return {
@@ -165,58 +207,63 @@ def build_web_research_node(
             }
 
         search_results = search_response.get("results") or []
-        urls = [
-            str(result["url"])
-            for result in search_results
-            if isinstance(result, dict) and result.get("url")
-        ][:max_sources]
+        title_by_url: dict[str, str] = {}
+        snippet_by_url: dict[str, str] = {}
 
-        fetched_results: list[dict] = []
+        for result in search_results:
+            if not isinstance(result, dict) or not result.get("url"):
+                continue
 
-        if urls:
-            fetch_response = web_fetch_tool.invoke(
-                {
-                    "urls": urls,
-                    "query": user_query,
-                }
-            )
+            url = str(result["url"])
+            title_by_url[url] = str(result.get("title") or url)
+            snippet_by_url[url] = str(result.get("content") or "").strip()
+
+        urls = list(title_by_url)[:max_sources]
+
+        fetched_by_url: dict[str, str] = {}
+        elapsed = time.monotonic() - started
+
+        if urls and elapsed <= budget_seconds:
+            try:
+                fetch_response = web_fetch_tool.invoke(
+                    {
+                        "urls": urls,
+                        "query": user_query,
+                    }
+                )
+            except Exception:
+                LOGGER.warning("网页抓取失败，退回搜索摘要", exc_info=True)
+                fetch_response = None
 
             if isinstance(fetch_response, dict):
-                fetched_results = [
-                    result
-                    for result in fetch_response.get("results") or []
-                    if isinstance(result, dict)
-                ]
+                for result in fetch_response.get("results") or []:
+                    if not isinstance(result, dict) or not result.get("url"):
+                        continue
 
-        raw_sources: list[dict[str, str]] = fetched_results
+                    body = str(
+                        result.get("raw_content")
+                        or result.get("content")
+                        or ""
+                    ).strip()
 
-        if not raw_sources:
-            raw_sources = [
-                {
-                    "title": str(result.get("title") or result.get("url")),
-                    "url": str(result.get("url")),
-                    "content": str(result.get("content") or ""),
-                }
-                for result in search_results
-                if isinstance(result, dict) and result.get("url")
-            ]
+                    if body:
+                        fetched_by_url[str(result["url"])] = body
+        elif urls:
+            LOGGER.info("联网预算用尽（%.1fs），跳过网页抓取", elapsed)
 
         sources: list[WebSource] = []
 
-        for result in raw_sources[:max_sources]:
-            content = str(
-                result.get("raw_content")
-                or result.get("content")
-                or ""
-            ).strip()
+        for url in urls:
+            # 抓到的正文优先；抓取失败或正文为空时退回搜索摘要，别把结果清空。
+            content = fetched_by_url.get(url) or snippet_by_url.get(url, "")
 
             if not content:
                 continue
 
             sources.append(
                 WebSource(
-                    title=str(result.get("title") or result.get("url")),
-                    url=str(result.get("url")),
+                    title=title_by_url.get(url, url),
+                    url=url,
                     content=content[:max_chars],
                 )
             )
@@ -253,7 +300,7 @@ def build_web_research_node(
 
 
 def build_compose_prompts_node(compose_chain):
-    def compose_node(state:AgentState) -> dict:
+    def compose_node(state: AgentState, config=None) -> dict:
         request = state.get("request")
         candidates = (
             state.get("reranked_candidates")
@@ -269,7 +316,8 @@ def build_compose_prompts_node(compose_chain):
         candidates_text = "\n\n".join(
             candidate.prompt_text for candidate in candidates[:3]
         )
-        final_prompt = compose_chain.invoke(
+        final_prompt = invoke_with_tokens(
+            compose_chain,
             {
                 "user_query": state["user_query"],
                 "conversation_context": state.get(
@@ -279,7 +327,8 @@ def build_compose_prompts_node(compose_chain):
                 "web_context": web_context,
                 "request_json": request_json,
                 "candidates_text": candidates_text,
-            }
+            },
+            token_sink(config),
         )
         if not final_prompt:
             return {"error": "LLM returned an empty prompt"}
@@ -291,13 +340,14 @@ def build_compose_prompts_node(compose_chain):
 
 
 def build_generate_prompt_node(generate_chain):
-    def generate_prompt_node(state: AgentState) -> dict:
+    def generate_prompt_node(state: AgentState, config=None) -> dict:
         request = state.get("request")
 
         if request is None:
             return {"error": "Missing request for direct generation"}
 
-        final_prompt = generate_chain.invoke(
+        final_prompt = invoke_with_tokens(
+            generate_chain,
             {
                 "user_query": state["user_query"],
                 "conversation_context": state.get(
@@ -305,7 +355,10 @@ def build_generate_prompt_node(generate_chain):
                     "",
                 ),
                 "request_json": request.model_dump_json(),
-            }
+                # 直接生成分支不需要变化提示，但模板要求这个变量必须存在。
+                "variation_hint": "",
+            },
+            token_sink(config),
         )
 
         if not final_prompt:

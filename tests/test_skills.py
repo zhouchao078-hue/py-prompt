@@ -8,9 +8,15 @@ from prompt_search_agent.skills.prompt_generation import (
 class FakeWorkflow:
     def __init__(self) -> None:
         self.input_state: dict[str, Any] | None = None
+        self.config: dict[str, Any] | None = None
 
-    def invoke(self, state: dict[str, Any]) -> dict[str, Any]:
+    def invoke(
+        self,
+        state: dict[str, Any],
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         self.input_state = state
+        self.config = config
         return {
             "user_query": state["user_query"],
             "final_prompt": "最终提示词",

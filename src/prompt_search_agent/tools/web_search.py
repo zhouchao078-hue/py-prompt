@@ -33,11 +33,13 @@ def build_web_search_tool(settings: Settings) -> StructuredTool:
     ) -> dict:
         return client.search(
             query=query,
-            search_depth="advanced",
+            # advanced 是深度检索，单次能跑十几秒；视觉参考用 basic 够快也够用。
+            search_depth=settings.tavily_search_depth,
             max_results=max_results,
             include_answer=False,
             include_raw_content=False,
             include_images=False,
+            timeout=settings.tavily_timeout_seconds,
             exclude_domains=[
                 "facebook.com",
                 "instagram.com",

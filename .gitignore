@@ -19,10 +19,13 @@ wheels/
 # Local data and generated indexes
 data/raw/
 data/indexes/
-data/eval/
 data/generated/
 data/server-*.log
 *.sqlite3
+
+# 评测集和基线要进 Git，只有每次跑出来的报告不入库
+data/eval/reports/
+data/eval/prompt_quality_report.json
 
 # OS and editor files
 .DS_Store

@@ -5,6 +5,8 @@ import json
 import logging
 import re
 import sqlite3
+import time
+from collections.abc import Callable
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -47,6 +49,7 @@ from prompt_search_agent.skills.prompt_generation import (
 )
 from prompt_search_agent.storage import (
     ConversationRepository,
+    ConversationSnapshot,
     build_cache_key,
     build_prompt_version,
     get_cached_prompt,
@@ -55,6 +58,7 @@ from prompt_search_agent.storage import (
     initialize_database,
     save_cached_prompt,
 )
+from prompt_search_agent.streaming import invoke_with_tokens
 from prompt_search_agent.tools import (
     WebToolNotConfigured,
     build_web_fetch_tool,
@@ -131,16 +135,24 @@ class PromptService:
         self,
         user_query: str,
         thread_id: str | None = None,
+        on_stage: Callable[[str], None] | None = None,
+        on_token: Callable[[str], None] | None = None,
+        *,
+        use_cache: bool = True,
     ) -> PromptServiceResult:
+        notify = on_stage or (lambda _stage: None)
         thread_id = thread_id or str(uuid4())
-        self.conversation_repo.ensure_conversation(thread_id)
-        self._compress_if_needed(thread_id)
+        deadline = time.monotonic() + self.settings.generation_deadline_seconds
 
-        snapshot = self.conversation_repo.load_snapshot(
-            thread_id,
-            self.settings.conversation_recent_messages,
-        )
+        def checkpoint() -> None:
+            """阶段边界检查总预算；超时就不再发起新的上游调用。"""
+            if time.monotonic() > deadline:
+                raise PromptServiceError("生成超时，请稍后重试")
+
+        snapshot = self._load_conversation(thread_id)
         conversation_context = snapshot.render_context()
+        checkpoint()
+        notify("intent")
         intent_result = self._classify_intent(
             user_query,
             conversation_context,
@@ -200,6 +212,7 @@ class PromptService:
             final_prompt = self._regenerate_from_context(
                 user_query,
                 conversation_context,
+                on_token,
             )
             self._save_turn(
                 thread_id,
@@ -224,6 +237,7 @@ class PromptService:
                 user_query,
                 conversation_context,
                 snapshot.previous_prompt or "",
+                on_token,
             )
             self._save_turn(
                 thread_id,
@@ -240,6 +254,8 @@ class PromptService:
                 thread_id=thread_id,
             )
 
+        checkpoint()
+        notify("retrieval")
         context_key = hashlib.sha256(
             (
                 conversation_context
@@ -259,10 +275,14 @@ class PromptService:
             index_version=index_version,
             context_key=context_key,
         )
-        cached_prompt = get_cached_prompt(
-            self.settings.prompt_db_path,
-            cache_key,
-            self.settings.sqlite_busy_timeout_ms,
+        cached_prompt = (
+            get_cached_prompt(
+                self.settings.prompt_db_path,
+                cache_key,
+                self.settings.sqlite_busy_timeout_ms,
+            )
+            if use_cache
+            else None
         )
 
         if cached_prompt is not None:
@@ -301,6 +321,7 @@ class PromptService:
             result = self.skill.invoke(
                 user_query,
                 conversation_context,
+                on_token,
             )
             final_prompt = result.get("final_prompt")
 
@@ -335,13 +356,15 @@ class PromptService:
                 raise
 
             fallback_request = SearchRequest(keywords=[user_query])
-            final_prompt = self.fallback_generate_chain.invoke(
+            final_prompt = invoke_with_tokens(
+                self.fallback_generate_chain,
                 {
                     "user_query": user_query,
                     "conversation_context": conversation_context,
                     "request_json": fallback_request.model_dump_json(),
                     "variation_hint": "",
-                }
+                },
+                on_token,
             )
 
             if not final_prompt:
@@ -520,12 +543,14 @@ class PromptService:
         self,
         user_query: str,
         conversation_context: str,
+        on_token: Callable[[str], None] | None = None,
     ) -> str:
         if self.fallback_generate_chain is None:
             raise PromptServiceError("Regeneration chain is not configured")
 
         request_json = SearchRequest().model_dump_json()
-        final_prompt = self.fallback_generate_chain.invoke(
+        final_prompt = invoke_with_tokens(
+            self.fallback_generate_chain,
             {
                 "user_query": user_query,
                 "conversation_context": conversation_context,
@@ -534,7 +559,8 @@ class PromptService:
                     "这是重新生成请求。保持核心主体和明确约束不变，"
                     "使用与上一版不同的构图、细节或视觉组织。"
                 ),
-            }
+            },
+            on_token,
         )
 
         if not final_prompt:
@@ -547,16 +573,19 @@ class PromptService:
         user_query: str,
         conversation_context: str,
         current_prompt: str,
+        on_token: Callable[[str], None] | None = None,
     ) -> str:
         if self.modify_chain is None:
             raise PromptServiceError("Modify chain is not configured")
 
-        final_prompt = self.modify_chain.invoke(
+        final_prompt = invoke_with_tokens(
+            self.modify_chain,
             {
                 "user_query": user_query,
                 "conversation_context": conversation_context,
                 "current_prompt": current_prompt,
-            }
+            },
+            on_token,
         )
 
         if not final_prompt:
@@ -564,23 +593,47 @@ class PromptService:
 
         return final_prompt.strip()
 
+    def _load_conversation(self, thread_id: str) -> ConversationSnapshot:
+        """会话记忆是增益功能，数据库抖一下不该让整个请求失败。"""
+        try:
+            self.conversation_repo.ensure_conversation(thread_id)
+            self._compress_if_needed(thread_id)
+            return self.conversation_repo.load_snapshot(
+                thread_id,
+                self.settings.conversation_recent_messages,
+            )
+        except sqlite3.DatabaseError:
+            LOGGER.warning("会话记忆不可用，按新会话处理", exc_info=True)
+            return ConversationSnapshot(
+                thread_id=thread_id,
+                summary="",
+                prompt_spec_json=None,
+                previous_prompt=None,
+                recent_messages=[],
+            )
+
     def _save_clarification(
         self,
         thread_id: str,
         user_query: str,
         reply: str,
     ) -> None:
-        self.conversation_repo.append_message(
-            thread_id,
-            "user",
-            user_query,
-        )
-        self.conversation_repo.append_message(
-            thread_id,
-            "assistant",
-            reply,
-        )
-        self.conversation_repo.touch_conversation(thread_id)
+        try:
+            self.conversation_repo.append_message(
+                thread_id,
+                "user",
+                user_query,
+            )
+            self.conversation_repo.append_message(
+                thread_id,
+                "assistant",
+                reply,
+            )
+            self.conversation_repo.touch_conversation(thread_id)
+        except sqlite3.DatabaseError:
+            LOGGER.warning("会话记录写入失败，回复照常返回", exc_info=True)
+            return
+
         self._compress_if_needed(thread_id)
 
     def _save_turn(
@@ -590,32 +643,42 @@ class PromptService:
         final_prompt: str,
         prompt_spec_json: str | None,
     ) -> None:
-        self.conversation_repo.append_message(
-            thread_id,
-            "user",
-            user_query,
-        )
-        self.conversation_repo.append_message(
-            thread_id,
-            "assistant",
-            final_prompt,
-        )
-        self.conversation_repo.update_after_turn(
-            thread_id,
-            prompt_spec_json,
-            final_prompt,
-        )
+        """写历史失败不能让已经算完（且已经付费）的提示词丢掉。"""
+        try:
+            self.conversation_repo.append_message(
+                thread_id,
+                "user",
+                user_query,
+            )
+            self.conversation_repo.append_message(
+                thread_id,
+                "assistant",
+                final_prompt,
+            )
+            self.conversation_repo.update_after_turn(
+                thread_id,
+                prompt_spec_json,
+                final_prompt,
+            )
+        except sqlite3.DatabaseError:
+            LOGGER.warning("会话记录写入失败，结果照常返回", exc_info=True)
+            return
+
         self._compress_if_needed(thread_id)
 
     def _compress_if_needed(self, thread_id: str) -> None:
         if self.summary_chain is None:
             return
 
-        batch = self.conversation_repo.get_compression_batch(
-            thread_id,
-            self.settings.conversation_recent_messages,
-            self.settings.conversation_compress_after_messages,
-        )
+        try:
+            batch = self.conversation_repo.get_compression_batch(
+                thread_id,
+                self.settings.conversation_recent_messages,
+                self.settings.conversation_compress_after_messages,
+            )
+        except sqlite3.DatabaseError:
+            LOGGER.warning("读取压缩批次失败，跳过压缩", exc_info=True)
+            return
 
         if batch is None:
             return
@@ -675,6 +738,7 @@ def build_prompt_service(settings: Settings) -> PromptService:
         search_backend,
         web_search_tool=web_search_tool,
         web_fetch_tool=web_fetch_tool,
+        web_mode=settings.web_research_mode,
     )
     return PromptService(
         settings,

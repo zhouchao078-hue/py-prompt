@@ -20,9 +20,32 @@ from prompt_search_agent.graph.nodes import (
     build_search_prompts_node,
     build_web_research_node,
 )
-from prompt_search_agent.graph.state import NO_MATCHING_PROMPT, AgentState
+from prompt_search_agent.graph.state import AgentState
 from prompt_search_agent.llm import create_chat_model
 from prompt_search_agent.search.sqlite import SqlitePromptSearchBackend
+
+WEB_RESEARCH_MODES = ("on_demand", "always", "never")
+
+# 只有用户明确要"查资料"时才走联网。默认不查，因为联网是 20s 级别的慢路径。
+WEB_TRIGGERS = (
+    "联网",
+    "搜索",
+    "查一下",
+    "查查",
+    "最新",
+    "资料",
+    "参考",
+    "网上",
+    "search",
+    "latest",
+    "reference",
+)
+
+
+def wants_web_research(user_query: str) -> bool:
+    lowered = user_query.casefold()
+    return any(trigger in lowered for trigger in WEB_TRIGGERS)
+
 
 
 def build_workflow(
@@ -33,6 +56,7 @@ def build_workflow(
     generate_chain,
     web_search_tool=None,
     web_fetch_tool=None,
+    web_mode: str = "on_demand",
 ):
     graph = StateGraph(AgentState)
     graph.add_node(
@@ -78,7 +102,7 @@ def build_workflow(
     graph.add_edge("search_prompt", "rerank_prompts")
     graph.add_conditional_edges(
         "rerank_prompts",
-        lambda state: route_after_rerank(state, web_enabled),
+        lambda state: route_after_rerank(state, web_enabled, web_mode),
     )
     if web_enabled:
         graph.add_conditional_edges(
@@ -99,24 +123,38 @@ def route_after_parse(state: AgentState) -> str:
 def route_after_rerank(
     state: AgentState,
     web_enabled: bool,
+    web_mode: str = "on_demand",
 ) -> str:
+    """决定本地命中后是组装、联网还是直接生成。
+
+    两条原则：
+    * 用户**明确要求联网**时优先满足，即使本地有命中 —— 否则用户说"查一下最新的"
+      却被本地老数据糊弄过去，是更糟的体验。本地候选仍会一起送进组装。
+    * 没命中且没要求联网时直接生成，不再阻塞在 20 秒级的抓取上。
+    """
+    if web_enabled and web_mode != "never":
+        asked = web_mode == "always" or wants_web_research(
+            str(state.get("user_query") or "")
+        )
+
+        if asked:
+            return "web_research"
+
     if state.get("reranked_candidates"):
         return "compose_prompt"
 
-    if web_enabled and (
-        state.get("needs_generation")
-        or state.get("error") == NO_MATCHING_PROMPT
-    ):
-        return "web_research"
-
-    return END
+    return "generate_from_brief"
 
 
 def route_after_web_research(state: AgentState) -> str:
+    # 联网拿到材料就组装；没拿到但本地有候选也照样组装，别浪费已有召回。
     if state.get("web_context"):
         return "compose_prompt"
 
-    return END
+    if state.get("reranked_candidates") or state.get("candidates"):
+        return "compose_prompt"
+
+    return "generate_from_brief"
 
 
 if __name__ == "__main__":

@@ -316,12 +316,49 @@ class ConversationRepository:
             )
             connection.commit()
 
-    def delete_conversation(self, thread_id: str) -> None:
+    def delete_conversation(self, thread_id: str) -> int:
+        """删除整个会话，返回被删除的消息条数（会话行由外键级联）。"""
         with closing(
             connect_database(self.db_path, self.busy_timeout_ms)
         ) as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM conversation_messages
+                WHERE thread_id = ?
+                """,
+                (thread_id,),
+            ).fetchone()
+            total = int(row["total"]) if row is not None else 0
+
             connection.execute(
                 "DELETE FROM conversations WHERE thread_id = ?",
                 (thread_id,),
             )
             connection.commit()
+
+        return total
+
+
+def delete_stale_conversations(
+    db_path: Path,
+    keep_days: int,
+    busy_timeout_ms: int = 5000,
+) -> int:
+    """删除长期没有更新的会话（消息由外键级联删除），返回会话条数。"""
+    if keep_days <= 0:
+        return 0
+
+    with closing(
+        connect_database(db_path, busy_timeout_ms)
+    ) as connection:
+        cursor = connection.execute(
+            """
+            DELETE FROM conversations
+            WHERE updated_at < datetime('now', ?)
+            """,
+            (f"-{int(keep_days)} days",),
+        )
+        connection.commit()
+
+    return max(cursor.rowcount, 0)

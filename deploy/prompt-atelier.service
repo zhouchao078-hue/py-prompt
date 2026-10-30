@@ -1,0 +1,20 @@
+[Unit]
+Description=Prompt Atelier web service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=atelier
+Group=atelier
+WorkingDirectory=/opt/prompt-atelier/current
+EnvironmentFile=/opt/prompt-atelier/shared/app.env
+# release.env 由 release.sh 生成，记录当前版本对应的 commit
+EnvironmentFile=-/opt/prompt-atelier/current/release.env
+ExecStart=/opt/prompt-atelier/current/.venv/bin/uvicorn prompt_search_agent.webapp:app --host 127.0.0.1 --port 8000 --workers 1
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

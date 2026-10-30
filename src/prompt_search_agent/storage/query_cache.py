@@ -189,3 +189,27 @@ def delete_cached_prompt(
         connection.commit()
 
     return cursor.rowcount > 0
+
+
+def delete_stale_cache(
+    db_path: Path,
+    keep_days: int,
+    busy_timeout_ms: int = 5000,
+) -> int:
+    """删除超过保留期的缓存行，返回删除条数。"""
+    if keep_days <= 0:
+        return 0
+
+    with closing(
+        connect_database(db_path, busy_timeout_ms)
+    ) as connection:
+        cursor = connection.execute(
+            """
+            DELETE FROM query_cache
+            WHERE created_at < datetime('now', ?)
+            """,
+            (f"-{int(keep_days)} days",),
+        )
+        connection.commit()
+
+    return max(cursor.rowcount, 0)

@@ -1,0 +1,47 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      SEED_FILE: /app/data/seed/prompts.jsonl.gz
+    volumes:
+      - atelier-data:/data
+    expose:
+      - "8000"
+    # 资源护栏：让失控请求杀掉自己，而不是拖垮宿主机。
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1G
+    # 不配轮转，Docker 日志会无限增长，一夜写满磁盘。
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  atelier-data:
+  caddy-data:
+  caddy-config:

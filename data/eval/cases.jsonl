@@ -1,0 +1,25 @@
+{"id": "c001", "bucket": "compose", "query": "雪山上戴红围巾的白色短腿小猫，电影感", "expect": {"route": "compose", "include": [["白猫", "白色", "白"], ["短腿", "矮脚"], ["围巾"], ["雪山", "雪地"]], "exclude": ["森林", "沙漠", "城市"]}, "notes": "雪山在库里有命中，应走组装"}
+{"id": "c002", "bucket": "compose", "query": "近景摄影，一只小猫坐在窗边，暖色阳光，浅景深", "expect": {"route": "compose", "include": [["猫"], ["窗"], ["暖"], ["景深"]], "exclude": ["夜晚"]}, "notes": "小猫在库里有命中"}
+{"id": "c003", "bucket": "compose", "query": "熊猫妈妈教小熊猫扫地，可爱风格", "expect": {"route": "compose", "include": [["熊猫"], ["扫"]], "exclude": []}, "notes": "熊猫系列在库里有命中"}
+{"id": "c004", "bucket": "compose", "query": "秋日里一棵红色大树，红叶飘落，唯美", "expect": {"route": "compose", "include": [["红"], ["树"], ["叶"]], "exclude": ["夏天", "海边"]}, "notes": "红色/红叶在库里有命中"}
+{"id": "c005", "bucket": "compose", "query": "一个可爱的萌娃，黑色大眼睛，面部特写", "expect": {"route": "any", "include": [["娃", "孩子", "萌娃"], ["眼睛"]], "exclude": []}, "notes": "萌娃系列在库里有命中", "holdout": true}
+{"id": "c006", "bucket": "compose", "query": "白色短腿胖小猫在雪山上滑雪，真实摄影，超广角", "expect": {"route": "compose", "include": [["猫"], ["雪"], ["滑雪", "滑"]], "exclude": []}, "notes": "原评测样例，雪山命中"}
+{"id": "c007", "bucket": "aspect", "query": "一只小猫，--ar 2:3", "expect": {"route": "any", "include": [["猫"]], "exclude": [], "aspect": "2:3"}, "notes": "竖版画幅必须保留"}
+{"id": "c008", "bucket": "aspect", "query": "雪山风景，超广角，--ar 16:9", "expect": {"route": "any", "include": [["雪"]], "exclude": [], "aspect": "16:9"}, "notes": "横版画幅", "holdout": true}
+{"id": "c009", "bucket": "aspect", "query": "萌娃特写，柔和光线，--ar 1:1", "expect": {"route": "any", "include": [["娃", "孩子"]], "exclude": [], "aspect": "1:1"}, "notes": "方形画幅"}
+{"id": "c010", "bucket": "longtail", "query": "赛博朋克雨夜街头，霓虹反光，孤独女杀手", "expect": {"route": "any", "include": [["赛博", "cyber"], ["霓虹"], ["杀手", "女"]], "exclude": []}, "notes": "库里中文 0 命中，必然走直接生成"}
+{"id": "c011", "bucket": "longtail", "query": "敦煌壁画风格的飞天，工笔重彩，对称构图", "expect": {"route": "any", "include": [["敦煌", "飞天"], ["工笔", "重彩"]], "exclude": []}, "notes": "库里无此主题", "holdout": true}
+{"id": "c012", "bucket": "longtail", "query": "一只用发光苔藓做成的水母，漂浮在深夜的图书馆里", "expect": {"route": "any", "include": [["水母"], ["图书馆"], ["苔藓"]], "exclude": []}, "notes": "怪诞组合"}
+{"id": "c013", "bucket": "modify", "query": "把这句话改写成更专业的摄影提示词：一只猫在雪地里", "expect": {"route": "modify", "include": [["猫"], ["雪"]], "exclude": []}, "notes": "改写链，主体不能丢"}
+{"id": "c014", "bucket": "modify", "query": "把「一只狗在公园里奔跑」翻译成英文提示词", "expect": {"route": "modify", "include": [["dog"]], "exclude": []}, "notes": "翻译必须真的输出英文", "holdout": true}
+{"id": "c015", "bucket": "modify", "query": "精简这段提示词，只保留主体和风格：雪山上的白猫，霓虹反光，电影感", "expect": {"route": "modify", "include": [["猫"]], "exclude": [], "max_chars": 120}, "notes": "精简要求 + 长度上限"}
+{"id": "c016", "bucket": "web", "query": "搜索一下 2024 年流行的 AIGC 配色方案，再写一个提示词", "expect": {"route": "web", "include": [], "exclude": []}, "notes": "明确要求联网"}
+{"id": "c017", "bucket": "web", "query": "查一下最近流行的赛博朋克摄影参考，然后给我一段提示词", "expect": {"route": "web", "include": [["赛博", "cyber"]], "exclude": []}, "notes": "联网后仍要包含主题", "holdout": true}
+{"id": "c018", "bucket": "web", "query": "联网找一些敦煌壁画的视觉资料，再写提示词", "expect": {"route": "web", "include": [["敦煌", "飞天"]], "exclude": []}, "notes": "联网兜底路径"}
+{"id": "c019", "bucket": "intent", "query": "你好，你能做什么？", "expect": {"route": "message", "include": [], "exclude": []}, "notes": "闲聊不该触发生成"}
+{"id": "c020", "bucket": "intent", "query": "你支持哪些画幅尺寸？", "expect": {"route": "message", "include": [], "exclude": []}, "notes": "提问不该触发生成"}
+{"id": "c021", "bucket": "intent", "query": "算了，先不改了", "expect": {"route": "message", "include": [], "exclude": []}, "notes": "取消操作", "holdout": true}
+{"id": "c022", "bucket": "intent", "query": "嗯……再弄一下", "expect": {"route": "clarification", "include": [], "exclude": []}, "notes": "模糊反馈应反问，最容易 flaky 的一条"}
+{"id": "c023", "bucket": "compose", "query": "一位穿汉服的少女站在雪地里，唯美", "expect": {"route": "compose", "include": [["汉服"], ["少女", "女子", "女孩"]], "exclude": []}, "notes": "「汉服」只存在分类里，是分类进索引的回归护栏"}
+{"id": "c024", "bucket": "compose", "query": "水下的婚纱，光影流动，唯美", "expect": {"route": "compose", "include": [["婚纱"], ["水"]], "exclude": []}, "notes": "「婚纱」57 条仅在分类里"}
+{"id": "c025", "bucket": "compose", "query": "一大片红玫瑰，花园，柔和光线", "expect": {"route": "compose", "include": [["玫瑰"], ["花"]], "exclude": []}, "notes": "「玫瑰」34 条仅在分类里"}

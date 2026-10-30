@@ -1,0 +1,19 @@
+# 没有域名就把站点地址改成 :80，用 http://<IP>/ 访问（口令仍然必须配置）。
+atelier.example.com {
+    encode zstd gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+
+    reverse_proxy app:8000 {
+        transport http {
+            # 生图任务虽然改成异步了，SSE 仍可能跑几十秒，别让反代先掐断。
+            response_header_timeout 180s
+        }
+    }
+}

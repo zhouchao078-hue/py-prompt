@@ -2,6 +2,11 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
+from prompt_search_agent.storage.migrations import (
+    apply_migrations,
+    get_schema_version,
+)
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS prompts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -147,6 +152,50 @@ def connect_database(
     )
 
     return connection
+def _ensure_auto_vacuum(connection: sqlite3.Connection) -> None:
+    """开启增量回收，否则 DELETE 之后文件不会变小。"""
+    mode = int(connection.execute("PRAGMA auto_vacuum").fetchone()[0])
+
+    if mode == 2:  # INCREMENTAL
+        return
+
+    has_tables = int(
+        connection.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'"
+        ).fetchone()[0]
+    )
+    connection.execute("PRAGMA auto_vacuum = INCREMENTAL")
+    connection.commit()
+
+    if has_tables:
+        # 已有库要一次全量 VACUUM 才能切换模式。
+        connection.execute("VACUUM")
+
+
+def reclaim_database(
+    db_path: Path,
+    busy_timeout_ms: int = 5000,
+    pages: int = 1000,
+) -> None:
+    """把已删除页真正还给文件系统，并顺手 optimize 索引。"""
+    with closing(
+        connect_database(db_path, busy_timeout_ms)
+    ) as connection:
+        connection.execute(f"PRAGMA incremental_vacuum({int(pages)})")
+        connection.execute("PRAGMA optimize")
+        connection.commit()
+
+
+def read_schema_version(
+    db_path: Path,
+    busy_timeout_ms: int = 5000,
+) -> int:
+    with closing(
+        connect_database(db_path, busy_timeout_ms)
+    ) as connection:
+        return get_schema_version(connection)
+
+
 def initialize_database(
     db_path: Path,
     busy_timeout_ms: int = 5000,
@@ -154,17 +203,9 @@ def initialize_database(
     with closing(
         connect_database(db_path, busy_timeout_ms)
     ) as connection:
+        _ensure_auto_vacuum(connection)
         connection.executescript(SCHEMA_SQL)
-        cache_columns = {
-            row["name"]
-            for row in connection.execute(
-                "PRAGMA table_info(query_cache)"
-            ).fetchall()
-        }
-        if "sources_json" not in cache_columns:
-            connection.execute(
-                "ALTER TABLE query_cache ADD COLUMN sources_json TEXT"
-            )
+        apply_migrations(connection)
         connection.execute(
             """
             INSERT INTO prompt_index_state (

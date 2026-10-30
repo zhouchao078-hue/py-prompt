@@ -9,6 +9,10 @@ const state = {
     prompt: "",
     media: "",
   },
+  threadTokens: {
+    prompt: "",
+    media: "",
+  },
 };
 
 const toolButtons = Array.from(document.querySelectorAll(".tool-item"));
@@ -37,6 +41,7 @@ const previewImageWrap = document.getElementById("previewImageWrap");
 const previewImage = document.getElementById("previewImage");
 const providerNote = document.getElementById("providerNote");
 const addPromptButton = document.getElementById("addPromptButton");
+const deleteThreadButton = document.getElementById("deleteThreadButton");
 const promptDialog = document.getElementById("promptDialog");
 const addPromptForm = document.getElementById("addPromptForm");
 const addPromptText = document.getElementById("addPromptText");
@@ -54,6 +59,45 @@ const toolCopy = {
     title: "影像生成",
   },
 };
+
+const DEMO_TOKEN_KEY = "prompt-atelier-token";
+
+function accessToken() {
+  try {
+    return localStorage.getItem(DEMO_TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function storeAccessToken(value) {
+  try {
+    localStorage.setItem(DEMO_TOKEN_KEY, value);
+  } catch {
+    // 存储不可用时只在本次会话生效
+  }
+}
+
+function authHeaders(extra = {}) {
+  const token = accessToken();
+
+  if (!token) {
+    return extra;
+  }
+
+  return { ...extra, Authorization: `Bearer ${token}` };
+}
+
+function requestAccessCode() {
+  const entered = window.prompt("请输入演示访问口令");
+
+  if (!entered || !entered.trim()) {
+    return false;
+  }
+
+  storeAccessToken(entered.trim());
+  return true;
+}
 
 function loadThreadId(tool) {
   const storageKey = `prompt-atelier-thread-${tool}`;
@@ -73,21 +117,108 @@ function loadThreadId(tool) {
   }
 }
 
-function saveThreadId(tool, threadId) {
+function loadThreadToken(tool) {
+  try {
+    return localStorage.getItem(`prompt-atelier-thread-token-${tool}`) || "";
+  } catch {
+    return "";
+  }
+}
+
+function threadHeaders(tool) {
+  const token = state.threadTokens[tool] || loadThreadToken(tool);
+
+  if (!token) {
+    return {};
+  }
+
+  return { "x-thread-token": token };
+}
+
+function saveThreadId(tool, threadId, threadToken) {
   if (!threadId) {
     return;
   }
 
   state.threadIds[tool] = threadId;
+  state.threadTokens[tool] = threadToken || "";
 
   try {
-    localStorage.setItem(
-      `prompt-atelier-thread-${tool}`,
-      threadId,
-    );
+    localStorage.setItem(`prompt-atelier-thread-${tool}`, threadId);
+
+    if (threadToken) {
+      localStorage.setItem(
+        `prompt-atelier-thread-token-${tool}`,
+        threadToken,
+      );
+    }
   } catch {
     // Conversation still works for the current page session.
   }
+}
+
+function resetThread(tool) {
+  try {
+    localStorage.removeItem(`prompt-atelier-thread-${tool}`);
+    localStorage.removeItem(`prompt-atelier-thread-token-${tool}`);
+  } catch {
+    // 存储不可用时只清内存状态
+  }
+
+  state.threadIds[tool] = "";
+  state.threadTokens[tool] = "";
+
+  const container = tool === "prompt" ? promptMessages : mediaMessages;
+  container.replaceChildren();
+  appendMessage(container, "assistant", "会话已清空，可以重新开始。", {
+    stateLabel: "CLEARED",
+  });
+
+  saveThreadId(tool, loadThreadId(tool), loadThreadToken(tool));
+}
+
+async function deleteConversation(tool) {
+  const threadId = state.threadIds[tool];
+
+  if (threadId) {
+    const response = await fetch(
+      `/api/history/${encodeURIComponent(threadId)}`,
+      {
+        method: "DELETE",
+        headers: authHeaders(threadHeaders(tool)),
+      },
+    );
+
+    if (!response.ok && response.status !== 404) {
+      throw new Error("删除失败，请稍后再试。");
+    }
+  }
+
+  resetThread(tool);
+}
+
+function initializeThreadDeletion() {
+  if (!deleteThreadButton) {
+    return;
+  }
+
+  deleteThreadButton.addEventListener("click", async () => {
+    const tool = state.tool;
+
+    if (!window.confirm("删除当前会话的全部历史记录？此操作不可恢复。")) {
+      return;
+    }
+
+    try {
+      await deleteConversation(tool);
+    } catch (error) {
+      appendMessage(
+        tool === "prompt" ? promptMessages : mediaMessages,
+        "error",
+        error instanceof Error ? error.message : "删除失败。",
+      );
+    }
+  });
 }
 
 function switchTool(toolName) {
@@ -349,22 +480,186 @@ function setBusy(tool, busy) {
   button.disabled = busy;
 }
 
-async function postJson(url, payload) {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+async function postJson(url, payload, extraHeaders = {}) {
+  const send = () =>
+    fetch(url, {
+      method: "POST",
+      headers: authHeaders({
+        "Content-Type": "application/json",
+        ...extraHeaders,
+      }),
+      body: JSON.stringify(payload),
+    });
+
+  let response = await send();
+
+  if (response.status === 401 && requestAccessCode()) {
+    response = await send();
+  }
 
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(data.detail || "请求失败，请稍后再试。");
+    throw new Error(
+      data.message || data.detail || "请求失败，请稍后再试。",
+    );
   }
 
   return data;
+}
+
+const STAGE_LABELS = {
+  intent: "UNDERSTANDING",
+  retrieval: "RETRIEVING",
+};
+
+function setTypingStage(article, stage) {
+  const label = article.querySelector(".message-state");
+  const text = STAGE_LABELS[stage];
+
+  if (label && text) {
+    label.textContent = text;
+  }
+}
+
+function parseSseChunk(chunk) {
+  let event = "message";
+  const dataLines = [];
+
+  chunk.split("\n").forEach((line) => {
+    if (line.startsWith("event:")) {
+      event = line.slice(6).trim();
+    } else if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trim());
+    }
+  });
+
+  if (!dataLines.length) {
+    return null;
+  }
+
+  try {
+    return { event, data: JSON.parse(dataLines.join("\n")) };
+  } catch {
+    return null;
+  }
+}
+
+async function streamPrompt(message, threadId, onStage, onToken) {
+  // 服务端预算是 45s，客户端留一倍余量；否则服务端假死时页面会一直转圈。
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 90000);
+  let started = false;
+
+  const send = () =>
+    fetch("/api/prompt/stream", {
+      method: "POST",
+      signal: controller.signal,
+      headers: authHeaders({
+        "Content-Type": "application/json",
+        ...threadHeaders("prompt"),
+      }),
+      body: JSON.stringify({ message, thread_id: threadId }),
+    });
+
+  try {
+    let response = await send();
+
+    if (response.status === 401 && requestAccessCode()) {
+      response = await send();
+    }
+
+    if (!response.ok || !response.body) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(
+        data.message || data.detail || "请求失败，请稍后再试。",
+      );
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let result = null;
+
+    for (;;) {
+      const { value, done } = await reader.read();
+
+      if (done) {
+        break;
+      }
+
+      started = true;
+      buffer += decoder.decode(value, { stream: true });
+
+      let boundary = buffer.indexOf("\n\n");
+
+      while (boundary >= 0) {
+        const chunk = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const parsed = parseSseChunk(chunk);
+
+        if (parsed && parsed.event === "stage") {
+          onStage(parsed.data.stage);
+        } else if (parsed && parsed.event === "token") {
+          onToken(parsed.data.text);
+        } else if (parsed && parsed.event === "result") {
+          result = parsed.data;
+        } else if (parsed && parsed.event === "error") {
+          throw new Error(parsed.data.message || "生成失败。");
+        }
+
+        boundary = buffer.indexOf("\n\n");
+      }
+    }
+
+    if (!result) {
+      throw new Error("生成中断，请稍后重试。");
+    }
+
+    return result;
+  } catch (error) {
+    if (error && error.name === "AbortError") {
+      throw new Error("请求超时，请稍后重试。");
+    }
+
+    // 已经收到过服务端事件，说明它可能算完了，只是连接被切断。
+    if (started) {
+      throw new Error(
+        "连接中断，服务端可能已生成完成，刷新页面即可查看结果。",
+      );
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function appendStreamingText(article, text) {
+  const body = article.querySelector(".message-body");
+
+  if (!body) {
+    return;
+  }
+
+  let target = body.querySelector(".streaming-text");
+
+  if (!target) {
+    // 第一段 token 到达时，把"正在生成"的三个点替换成正文。
+    body.replaceChildren();
+    target = document.createElement("span");
+    target.className = "streaming-text";
+    body.appendChild(target);
+
+    const label = article.querySelector(".message-state");
+
+    if (label) {
+      label.textContent = "STREAMING";
+    }
+  }
+
+  target.textContent += text;
+  scrollMessages(article.parentElement);
 }
 
 async function submitPrompt(event) {
@@ -388,11 +683,13 @@ async function submitPrompt(event) {
   const typing = appendTyping(promptMessages, "RETRIEVING");
 
   try {
-    const data = await postJson("/api/prompt", {
+    const data = await streamPrompt(
       message,
-      thread_id: state.threadIds.prompt,
-    });
-    saveThreadId("prompt", data.thread_id);
+      state.threadIds.prompt,
+      (stage) => setTypingStage(typing, stage),
+      (text) => appendStreamingText(typing, text),
+    );
+    saveThreadId("prompt", data.thread_id, data.thread_token);
     typing.remove();
 
     if (data.response_type !== "prompt") {
@@ -465,6 +762,33 @@ function renderGeneratedImage(data, fallbackPrompt = "") {
   previewImage.alt = data.prompt || fallbackPrompt || "生成的图片";
 }
 
+async function pollImageJob(jobId) {
+  // 生图可能耗时 1~2 分钟，长连接会被网关切断，改成短轮询。
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+
+    const response = await fetch(`/api/images/jobs/${jobId}`, {
+      headers: authHeaders(),
+    });
+
+    if (!response.ok) {
+      throw new Error("图片任务查询失败。");
+    }
+
+    const job = await response.json();
+
+    if (job.status === "done") {
+      return job;
+    }
+
+    if (job.status === "failed") {
+      throw new Error(job.message || "图片生成失败。");
+    }
+  }
+
+  throw new Error("图片生成超时，请稍后重试。");
+}
+
 async function generateFromPrompt(prompt) {
   if (!prompt || state.busy.media) {
     return;
@@ -488,10 +812,11 @@ async function generateFromPrompt(prompt) {
   const typing = appendTyping(mediaMessages, "RENDERING");
 
   try {
-    const data = await postJson("/api/images/generate", {
+    const job = await postJson("/api/images/jobs", {
       prompt,
       aspect_ratio: aspectRatio.value,
     });
+    const data = await pollImageJob(job.job_id);
     typing.remove();
     renderGeneratedImage(data, prompt);
     appendMessage(
@@ -521,6 +846,46 @@ async function generateFromPrompt(prompt) {
     );
   } finally {
     setBusy("media", false);
+  }
+}
+
+async function renderImageInBackground(prompt) {
+  // 提示词先落地，图片交给后台任务渲染，避免长请求被网关切断。
+  providerNote.textContent = "GENERATION PROVIDER · RENDERING";
+
+  try {
+    const job = await postJson("/api/images/jobs", {
+      prompt,
+      aspect_ratio: aspectRatio.value,
+    });
+    const rendered = await pollImageJob(job.job_id);
+
+    previewResult.classList.add("has-image");
+    previewImageWrap.hidden = false;
+    previewType.textContent = "GENERATED IMAGE";
+    previewStatus.textContent = "GENERATED";
+    providerNote.textContent = rendered.image_cached
+      ? "OPENAI COMPATIBLE · CACHE HIT"
+      : "OPENAI COMPATIBLE · GENERATED";
+    previewImage.src = rendered.image_url;
+    previewImage.alt = prompt;
+
+    appendMessage(
+      mediaMessages,
+      "assistant",
+      rendered.image_cached ? "已复用缓存图片。" : "图片已生成并保存。",
+      {
+        stateLabel: rendered.image_cached ? "IMAGE CACHED" : "GENERATED",
+        copyText: prompt,
+      },
+    );
+  } catch (error) {
+    providerNote.textContent = "GENERATION PROVIDER · PROMPT ONLY";
+    appendMessage(
+      mediaMessages,
+      "error",
+      error instanceof Error ? error.message : "图片生成失败。",
+    );
   }
 }
 
@@ -554,13 +919,18 @@ async function submitMedia(event) {
   const typing = appendTyping(mediaMessages, "DIRECTING");
 
   try {
-    const data = await postJson("/api/media", {
-      message,
-      media_type: state.mediaType,
-      aspect_ratio: aspectRatio.value,
-      thread_id: state.threadIds.media,
-    });
-    saveThreadId("media", data.thread_id);
+    const data = await postJson(
+      "/api/media",
+      {
+        message,
+        media_type: state.mediaType,
+        aspect_ratio: aspectRatio.value,
+        thread_id: state.threadIds.media,
+        render_image: false,
+      },
+      threadHeaders("media"),
+    );
+    saveThreadId("media", data.thread_id, data.thread_token);
 
     typing.remove();
 
@@ -635,6 +1005,10 @@ async function submitMedia(event) {
         sources: data.sources || [],
       },
     );
+
+    if (!hasImage && state.mediaType === "image" && data.prompt) {
+      renderImageInBackground(data.prompt);
+    }
   } catch (error) {
     typing.remove();
     previewEmpty.hidden = false;
@@ -719,6 +1093,7 @@ async function loadConversationHistory(tool) {
   try {
     const response = await fetch(
       `/api/history/${encodeURIComponent(threadId)}?limit=500`,
+      { headers: authHeaders(threadHeaders(tool)) },
     );
     if (!response.ok) {
       return;
@@ -762,6 +1137,8 @@ async function loadConversationHistory(tool) {
 }
 
 async function initializeHealth() {
+  const label = systemStatus.querySelector("span:last-child");
+
   try {
     const response = await fetch("/api/health");
 
@@ -770,11 +1147,27 @@ async function initializeHealth() {
     }
 
     const data = await response.json();
-    systemStatus.querySelector("span:last-child").textContent = "本地服务在线";
-    promptCount.textContent = `${data.prompt_count || 0} PROMPTS`;
+    const dbDown = data.db === "down";
+    const degraded = data.status !== "ok";
+
+    systemStatus.classList.toggle("is-error", dbDown);
+    systemStatus.classList.toggle("is-degraded", degraded && !dbDown);
+
+    if (dbDown) {
+      label.textContent = "数据库不可用";
+    } else if (degraded) {
+      label.textContent = "服务降级运行";
+    } else {
+      label.textContent = "本地服务在线";
+    }
+
+    promptCount.textContent = data.prompt_count
+      ? `${data.prompt_count} PROMPTS`
+      : "INDEX EMPTY";
   } catch {
+    systemStatus.classList.remove("is-degraded");
     systemStatus.classList.add("is-error");
-    systemStatus.querySelector("span:last-child").textContent = "服务未连接";
+    label.textContent = "服务未连接";
   }
 }
 
@@ -791,9 +1184,10 @@ initializeExamples();
 initializeTextareas();
 initializeMediaTabs();
 initializePromptDialog();
+initializeThreadDeletion();
 initializeHealth();
-saveThreadId("prompt", loadThreadId("prompt"));
-saveThreadId("media", loadThreadId("media"));
+saveThreadId("prompt", loadThreadId("prompt"), loadThreadToken("prompt"));
+saveThreadId("media", loadThreadId("media"), loadThreadToken("media"));
 loadConversationHistory("prompt");
 loadConversationHistory("media");
 

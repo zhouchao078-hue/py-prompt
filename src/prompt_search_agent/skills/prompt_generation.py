@@ -26,12 +26,14 @@ class PromptGenerationSkill:
         self,
         user_query: str,
         conversation_context: str = "",
+        on_token: Any | None = None,
     ) -> dict[str, Any]:
         return self.workflow.invoke(
             {
                 "user_query": user_query,
                 "conversation_context": conversation_context,
-            }
+            },
+            config={"configurable": {"on_token": on_token}},
         )
 
 
@@ -40,6 +42,7 @@ def build_prompt_generation_skill(
     search_backend: PromptSearchBackend,
     web_search_tool: Any | None = None,
     web_fetch_tool: Any | None = None,
+    web_mode: str = "on_demand",
 ) -> PromptGenerationSkill:
     """Build the prompt generation skill and its dependencies."""
 
@@ -55,5 +58,6 @@ def build_prompt_generation_skill(
         generate_chain,
         web_search_tool=web_search_tool,
         web_fetch_tool=web_fetch_tool,
+        web_mode=web_mode,
     )
     return PromptGenerationSkill(workflow)

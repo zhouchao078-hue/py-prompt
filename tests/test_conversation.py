@@ -21,6 +21,7 @@ class ContextAwareSkill:
         self,
         user_query: str,
         conversation_context: str = "",
+        on_token=None,
     ) -> dict[str, Any]:
         self.contexts.append(conversation_context)
         return {
@@ -35,6 +36,7 @@ class NoMatchSkill:
         self,
         user_query: str,
         conversation_context: str = "",
+        on_token=None,
     ) -> dict[str, Any]:
         return {
             "candidates": [],

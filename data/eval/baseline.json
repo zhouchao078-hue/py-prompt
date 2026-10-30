@@ -1,0 +1,42 @@
+{
+  "cases": 25,
+  "include_recall": 1.0,
+  "exclude_violations": 0,
+  "aspect_pass_rate": 1.0,
+  "route_accuracy": 1.0,
+  "over_length": 0,
+  "latency_p50": 5.98,
+  "latency_p95": 9.31,
+  "by_bucket": {
+    "aspect": {
+      "cases": 3,
+      "include_recall": 1.0,
+      "route_accuracy": 1.0
+    },
+    "compose": {
+      "cases": 9,
+      "include_recall": 1.0,
+      "route_accuracy": 1.0
+    },
+    "intent": {
+      "cases": 4,
+      "include_recall": 1.0,
+      "route_accuracy": 1.0
+    },
+    "longtail": {
+      "cases": 3,
+      "include_recall": 1.0,
+      "route_accuracy": 1.0
+    },
+    "modify": {
+      "cases": 3,
+      "include_recall": 1.0,
+      "route_accuracy": 1.0
+    },
+    "web": {
+      "cases": 3,
+      "include_recall": 1.0,
+      "route_accuracy": 1.0
+    }
+  }
+}

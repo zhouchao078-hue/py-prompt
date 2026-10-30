@@ -129,6 +129,7 @@ def build_image_generation_skill(
         timeout_seconds=settings.image_timeout_seconds,
         max_download_bytes=settings.image_max_download_bytes,
         response_format=settings.image_response_format,
+        output_format=settings.image_output_format,
     )
     initialize_database(
         settings.prompt_db_path,

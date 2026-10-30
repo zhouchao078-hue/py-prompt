@@ -1,12 +1,12 @@
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
-from langgraph.constants import END
 from pydantic import SecretStr
 
 from prompt_search_agent.config import Settings
 from prompt_search_agent.graph.nodes import build_web_research_node
+from prompt_search_agent.graph.state import AgentState
 from prompt_search_agent.graph.workflow import (
     route_after_rerank,
     route_after_web_research,
@@ -66,6 +66,33 @@ def test_web_research_node_builds_context_and_sources() -> None:
     assert "Detailed mechanical whale reference." in result["web_context"]
 
 
+class EmptyFetchTool:
+    """抓取返回了结果但正文为空 —— 曾经会把 sources 直接清空。"""
+
+    def invoke(self, input_: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "results": [
+                {
+                    "title": "Mechanical whale",
+                    "url": "https://example.com/whale",
+                    "raw_content": "",
+                }
+            ]
+        }
+
+
+def test_empty_fetch_falls_back_to_search_snippets() -> None:
+    node = build_web_research_node(
+        FakeWebSearchTool(),
+        EmptyFetchTool(),
+    )
+
+    result = node({"user_query": "火星机械鲸鱼"})
+
+    assert len(result["web_sources"]) == 1
+    assert "A mechanical whale on Mars." in result["web_context"]
+
+
 def test_web_tools_require_tavily_key(tmp_path: Path) -> None:
     settings = Settings(
         deepseek_api_key=SecretStr("test-key"),
@@ -81,14 +108,58 @@ def test_web_tools_require_tavily_key(tmp_path: Path) -> None:
 
 
 def test_web_routes() -> None:
+    # 只有用户明确要查资料才走联网；否则直接生成，避免 20s 慢路径。
+    assert route_after_rerank(
+        {
+            "user_query": "搜索一下 test",
+            "reranked_candidates": [],
+            "needs_generation": True,
+        },
+        web_enabled=True,
+    ) == "web_research"
+
+    assert route_after_rerank(
+        {
+            "user_query": "一只雪夜里的白猫",
+            "reranked_candidates": [],
+            "needs_generation": True,
+        },
+        web_enabled=True,
+    ) == "generate_from_brief"
+
+    # always 模式保持旧行为
+    assert route_after_rerank(
+        {
+            "user_query": "一只雪夜里的白猫",
+            "reranked_candidates": [],
+            "needs_generation": True,
+        },
+        web_enabled=True,
+        web_mode="always",
+    ) == "web_research"
+
+    # 明确要求联网时，即使本地有候选也要联网（本地候选仍会参与组装）
+    assert route_after_rerank(
+        cast(
+            AgentState,
+            {
+                "user_query": "搜索一下 赛博朋克配色",
+                "reranked_candidates": ["candidate"],
+                "needs_generation": False,
+            },
+        ),
+        web_enabled=True,
+    ) == "web_research"
+
+    # 没有联网工具时直接生成，不再以"未检索到"结束
     assert route_after_rerank(
         {
             "user_query": "test",
             "reranked_candidates": [],
             "needs_generation": True,
         },
-        web_enabled=True,
-    ) == "web_research"
+        web_enabled=False,
+    ) == "generate_from_brief"
 
     assert route_after_web_research(
         {
@@ -97,9 +168,10 @@ def test_web_routes() -> None:
         }
     ) == "compose_prompt"
 
+    # 联网没捞到东西也退回生成，而不是 END
     assert route_after_web_research(
         {
             "user_query": "test",
             "web_context": "",
         }
-    ) == END
+    ) == "generate_from_brief"

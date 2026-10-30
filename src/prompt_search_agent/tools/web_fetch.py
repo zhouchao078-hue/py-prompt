@@ -34,6 +34,7 @@ def build_web_fetch_tool(settings: Settings) -> StructuredTool:
             include_images=False,
             format="text",
             query=query or "",
+            timeout=settings.tavily_timeout_seconds,
         )
 
     return StructuredTool.from_function(
