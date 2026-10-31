@@ -17,6 +17,7 @@ from prompt_search_agent.search.tokenizer import normalize_text
 
 RouteExpectation = Literal[
     "any",
+    "prompt",
     "compose",
     "generate_from_brief",
     "web",
@@ -32,10 +33,13 @@ BUCKETS = (
     "modify",
     "web",
     "intent",
+    "context",
 )
 
 MIN_CASES_PER_BUCKET = 3
 HOLDOUT_RATIO_RANGE = (0.15, 0.40)
+# 多轮用例最多回放几轮，太多会拖慢评测且上下文被压缩
+MAX_CONTEXT_TURNS = 4
 
 # 上线门槛：硬要求零容忍，judge 允许小幅波动。
 GATES = {
@@ -62,6 +66,9 @@ class EvalCase(BaseModel):
     expect: Expect
     holdout: bool = False
     notes: str = ""
+    # 多轮：先按顺序把这几句用户消息打进同一个会话，再评测 query。
+    # 「上面那句」「再改一下」「换个颜色」这类问法只有带上下文才成立。
+    context: list[str] = Field(default_factory=list)
 
 
 class CaseOutcome(BaseModel):
@@ -304,6 +311,16 @@ def validate_cases(cases: list[EvalCase]) -> list[str]:
 
         if not case.query.strip():
             problems.append(f"{case.id} query 为空")
+
+        for turn in case.context:
+            if not turn.strip():
+                problems.append(f"{case.id} context 里有空轮次")
+
+        if len(case.context) > MAX_CONTEXT_TURNS:
+            problems.append(
+                f"{case.id} context 有 {len(case.context)} 轮，"
+                f"最多 {MAX_CONTEXT_TURNS} 轮"
+            )
 
         for group in case.expect.include:
             if not group:

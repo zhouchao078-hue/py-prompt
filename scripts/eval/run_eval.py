@@ -13,6 +13,7 @@ import json
 import subprocess
 import sys
 import time
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -79,9 +80,30 @@ def run_cases(
 
         started = time.perf_counter()
 
-        try:
+        def execute(target_case=case):
+            # 多轮用例：先把前几轮打进同一个会话，模型会自己去生成中间回复，
+            # 再评测最后一轮 —— 「上面那句」「再改一下」只有带上下文才成立。
+            thread_id = uuid.uuid4().hex if target_case.context else None
+
+            for turn in target_case.context:
+                service.generate(turn, thread_id=thread_id, use_cache=False)
+
             # 绕过缓存：命中缓存一律报 compose，会把真实路由抹平。
-            result = service.generate(case.query, use_cache=False)
+            return service.generate(
+                target_case.query,
+                thread_id=thread_id,
+                use_cache=False,
+            )
+
+        try:
+            result = execute()
+
+            # 联网用例受上游抖动影响：一次没拿到资料就再试一次，
+            # 连续两次都没有才算真的坏了。
+            if case.expect.route == "web" and not result.web_sources:
+                print(f"\n    {case.id} 首次未取到网页资料，重试一次")
+                result = execute()
+
             latency = time.perf_counter() - started
         except Exception as exc:  # noqa: BLE001
             skipped.append(f"{case.id} 生成失败：{type(exc).__name__}: {exc}")

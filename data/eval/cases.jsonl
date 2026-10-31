@@ -25,3 +25,9 @@
 {"id": "c025", "bucket": "compose", "query": "一大片红玫瑰，花园，柔和光线", "expect": {"route": "compose", "include": [["玫瑰"], ["花"]], "exclude": []}, "notes": "「玫瑰」34 条仅在分类里"}
 {"id": "c026", "bucket": "intent", "query": "你用什么方法修改提示词的", "expect": {"route": "message", "include": [], "exclude": []}, "notes": "问方法属于提问，不能被当成修改指令（曾经会返回一份提示词）", "holdout": false}
 {"id": "c027", "bucket": "modify", "query": "把这句话润色一下", "expect": {"route": "clarification", "include": [], "exclude": []}, "notes": "空上下文下裸修改指令应追问，不能凭空生成一版", "holdout": false}
+{"id": "c030", "bucket": "context", "context": ["一只白猫坐在雪山上，电影感"], "query": "把围巾改成红色", "expect": {"route": "prompt", "include": [["雪山"], ["红"]], "exclude": []}, "notes": "带上下文改元素：应基于上一版改，而不是重新创作"}
+{"id": "c031", "bucket": "context", "context": ["一只白猫坐在雪山上，电影感"], "query": "你刚才是怎么改的", "expect": {"route": "message", "include": [], "exclude": []}, "notes": "问方法属于提问，带上下文时同样不能被当成修改指令"}
+{"id": "c032", "bucket": "context", "context": ["一只白猫坐在雪山上，电影感", "把围巾改成红色"], "query": "上面的那个提示词你是用什么方法修改的", "expect": {"route": "message", "include": [], "exclude": []}, "notes": "用户实测踩到的原句：连着两轮操作后问流程"}
+{"id": "c033", "bucket": "context", "context": ["一只白猫坐在雪山上，电影感"], "query": "再来一版", "expect": {"route": "prompt", "include": [["猫"]], "exclude": []}, "notes": "有上一版时 regenerate 应真的重做，而不是追问"}
+{"id": "c034", "bucket": "context", "context": ["一只白猫坐在雪山上，电影感"], "query": "嗯……不太行", "expect": {"route": "clarification", "include": [], "exclude": []}, "notes": "模糊否定应追问具体方向"}
+{"id": "c035", "bucket": "context", "context": ["一只白猫坐在雪山上，电影感"], "query": "为什么这个提示词这么长", "expect": {"route": "message", "include": [], "exclude": []}, "notes": "对产物的质疑属于提问", "holdout": true}

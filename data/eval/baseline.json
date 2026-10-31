@@ -1,12 +1,12 @@
 {
-  "cases": 27,
+  "cases": 33,
   "include_recall": 1.0,
   "exclude_violations": 0,
   "aspect_pass_rate": 1.0,
   "route_accuracy": 1.0,
   "over_length": 0,
-  "latency_p50": 5.44,
-  "latency_p95": 11.25,
+  "latency_p50": 5.94,
+  "latency_p95": 11.22,
   "by_bucket": {
     "aspect": {
       "cases": 3,
@@ -15,6 +15,11 @@
     },
     "compose": {
       "cases": 9,
+      "include_recall": 1.0,
+      "route_accuracy": 1.0
+    },
+    "context": {
+      "cases": 6,
       "include_recall": 1.0,
       "route_accuracy": 1.0
     },
