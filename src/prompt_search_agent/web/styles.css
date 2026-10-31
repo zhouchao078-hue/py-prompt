@@ -1291,3 +1291,75 @@ button {
     animation: none;
   }
 }
+
+/* —— 历史对话 / 会话码 —— */
+.dialog-hint {
+  margin: 0;
+  font-family: var(--ui-cn);
+  font-size: 0.78rem;
+  line-height: 1.7;
+  color: var(--muted-light);
+}
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.history-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font-family: var(--ui-cn);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.history-item:hover {
+  background: var(--accent-soft);
+  border-color: rgba(217, 119, 87, 0.4);
+}
+
+.history-item__title {
+  font-size: 0.84rem;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-item__meta {
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  color: var(--muted-light);
+}
+
+.session-code {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 10px 12px;
+  border: 1px dashed rgba(217, 119, 87, 0.5);
+  border-radius: 6px;
+  background: var(--accent-soft);
+}
+
+.session-code code {
+  font-family: var(--ui-cn);
+  font-size: 0.92rem;
+  letter-spacing: 0.16em;
+  color: var(--ink);
+}
+
+.prompt-dialog__actions--split {
+  justify-content: space-between;
+}

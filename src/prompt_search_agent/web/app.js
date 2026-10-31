@@ -49,6 +49,23 @@ const addPromptCategory = document.getElementById("addPromptCategory");
 const cancelPromptDialog = document.getElementById("cancelPromptDialog");
 const savePromptButton = document.getElementById("savePromptButton");
 
+const historyButton = document.getElementById("historyButton");
+const historyDialog = document.getElementById("historyDialog");
+const historyList = document.getElementById("historyList");
+const closeHistoryDialog = document.getElementById("closeHistoryDialog");
+const newConversationButton = document.getElementById("newConversationButton");
+
+const sessionButton = document.getElementById("sessionButton");
+const sessionDialog = document.getElementById("sessionDialog");
+const closeSessionDialog = document.getElementById("closeSessionDialog");
+const sessionCodeBox = document.getElementById("sessionCodeBox");
+const sessionCodeValue = document.getElementById("sessionCodeValue");
+const copySessionCodeButton = document.getElementById("copySessionCode");
+const issueSessionCodeButton = document.getElementById("issueSessionCode");
+const resetSessionButton = document.getElementById("resetSessionButton");
+const restoreCodeInput = document.getElementById("restoreCodeInput");
+const restoreSessionButton = document.getElementById("restoreSessionButton");
+
 const toolCopy = {
   prompt: {
     kicker: "PROMPT STUDIO",
@@ -125,14 +142,9 @@ function loadThreadToken(tool) {
   }
 }
 
-function threadHeaders(tool) {
-  const token = state.threadTokens[tool] || loadThreadToken(tool);
-
-  if (!token) {
-    return {};
-  }
-
-  return { "x-thread-token": token };
+function threadHeaders() {
+  // 身份现在由服务端 HttpOnly cookie 承载，请求头不需要再带任何东西。
+  return {};
 }
 
 function saveThreadId(tool, threadId, threadToken) {
@@ -172,13 +184,7 @@ function dropStaleThread(tool) {
 }
 
 function resetThread(tool) {
-  try {
-    localStorage.removeItem(`prompt-atelier-thread-${tool}`);
-    localStorage.removeItem(`prompt-atelier-thread-token-${tool}`);
-  } catch {
-    // 存储不可用时只清内存状态
-  }
-
+  // 只清界面与"当前对话"指针；服务端会话和 cookie 都不动
   state.threadIds[tool] = "";
   state.threadTokens[tool] = "";
 
@@ -187,8 +193,6 @@ function resetThread(tool) {
   appendMessage(container, "assistant", "会话已清空，可以重新开始。", {
     stateLabel: "CLEARED",
   });
-
-  saveThreadId(tool, loadThreadId(tool), loadThreadToken(tool));
 }
 
 async function deleteConversation(tool) {
@@ -1106,33 +1110,244 @@ function initializePromptDialog() {
   });
 }
 
-async function loadConversationHistory(tool) {
-  const threadId = state.threadIds[tool];
-  if (!threadId) {
+async function getJson(path) {
+  const response = await fetch(path, { headers: authHeaders({}) });
+
+  if (response.status === 401 && promptForAccessCode()) {
+    return getJson(path);
+  }
+
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.detail || "请求失败，请稍后再试。");
+  }
+
+  return response.json();
+}
+
+function activeTool() {
+  const panel = document.getElementById("panel-media");
+
+  return panel && panel.classList.contains("is-active") ? "media" : "prompt";
+}
+
+function formatHistoryTime(value) {
+  return typeof value === "string" && value.length >= 16
+    ? `${value.slice(5, 10)} ${value.slice(11, 16)}`
+    : "";
+}
+
+async function refreshConversationList() {
+  const tool = activeTool();
+  const data = await getJson(`/api/conversations?tool=${tool}`);
+  const items = data.items || [];
+
+  historyList.replaceChildren();
+
+  if (!items.length) {
+    const empty = document.createElement("p");
+    empty.className = "dialog-hint";
+    empty.textContent = "还没有历史对话，先聊一句再来。";
+    historyList.appendChild(empty);
     return;
   }
 
+  items.forEach((item) => {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "history-item";
+
+    const title = document.createElement("span");
+    title.className = "history-item__title";
+    title.textContent = item.title || "未命名对话";
+
+    const meta = document.createElement("span");
+    meta.className = "history-item__meta";
+    meta.textContent =
+      `${item.message_count} 条 · ${formatHistoryTime(item.updated_at)}`;
+
+    row.append(title, meta);
+    row.addEventListener("click", async () => {
+      state.threadIds[tool] = item.thread_id;
+      historyDialog.close();
+      await loadConversationHistory(tool, item.thread_id);
+    });
+
+    historyList.appendChild(row);
+  });
+}
+
+async function openHistoryDialog() {
+  historyDialog.showModal();
+
+  try {
+    await refreshConversationList();
+  } catch {
+    historyList.replaceChildren();
+  }
+}
+
+async function startNewConversation() {
+  const tool = activeTool();
+  const container = tool === "media" ? mediaMessages : promptMessages;
+
+  try {
+    const data = await postJson("/api/conversations", { tool });
+    state.threadIds[tool] = data.thread_id;
+    container.replaceChildren();
+    historyDialog.close();
+    appendMessage(container, "assistant", "新对话已开始。", {
+      stateLabel: "NEW",
+    });
+  } catch (error) {
+    appendMessage(
+      container,
+      "error",
+      error instanceof Error ? error.message : "新建对话失败。",
+    );
+  }
+}
+
+async function issueSessionCode() {
+  try {
+    const data = await postJson("/api/session/code", {});
+    sessionCodeValue.textContent = data.code;
+    sessionCodeBox.hidden = false;
+  } catch (error) {
+    window.alert(error instanceof Error ? error.message : "生成会话码失败。");
+  }
+}
+
+async function copySessionCode() {
+  const code = sessionCodeValue.textContent || "";
+
+  if (!code) {
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(code);
+    copySessionCodeButton.textContent = "已复制";
+    window.setTimeout(() => {
+      copySessionCodeButton.textContent = "复制";
+    }, 1500);
+  } catch {
+    restoreCodeInput.value = code;
+  }
+}
+
+async function restoreSession() {
+  const code = restoreCodeInput.value.trim();
+
+  if (!code) {
+    return;
+  }
+
+  try {
+    await postJson("/api/session/restore", { code });
+    sessionDialog.close();
+    promptMessages.replaceChildren();
+    mediaMessages.replaceChildren();
+    state.threadIds.prompt = "";
+    state.threadIds.media = "";
+    await bootstrapSession();
+    appendMessage(promptMessages, "assistant", "会话已恢复。", {
+      stateLabel: "RESTORED",
+    });
+  } catch (error) {
+    window.alert(error instanceof Error ? error.message : "恢复失败。");
+  }
+}
+
+async function resetSession() {
+  try {
+    await postJson("/api/session/reset", {});
+    sessionDialog.close();
+    promptMessages.replaceChildren();
+    mediaMessages.replaceChildren();
+    state.threadIds.prompt = "";
+    state.threadIds.media = "";
+    await bootstrapSession();
+    appendMessage(promptMessages, "assistant", "已切换到新会话。", {
+      stateLabel: "NEW SESSION",
+    });
+  } catch (error) {
+    window.alert(error instanceof Error ? error.message : "切换失败。");
+  }
+}
+
+async function bootstrapSession() {
+  try {
+    // 服务端会下发 HttpOnly cookie，之后所有请求自动带上
+    await getJson("/api/session");
+  } catch {
+    return;
+  }
+
+  await loadConversationHistory("prompt");
+  await loadConversationHistory("media");
+}
+
+function initializeHistoryDialog() {
+  historyButton.addEventListener("click", () => {
+    openHistoryDialog();
+  });
+  closeHistoryDialog.addEventListener("click", () => {
+    historyDialog.close();
+  });
+  newConversationButton.addEventListener("click", () => {
+    startNewConversation();
+  });
+}
+
+function initializeSessionDialog() {
+  sessionButton.addEventListener("click", () => {
+    sessionDialog.showModal();
+    sessionCodeBox.hidden = true;
+    sessionCodeValue.textContent = "";
+    restoreCodeInput.value = "";
+  });
+  closeSessionDialog.addEventListener("click", () => {
+    sessionDialog.close();
+  });
+  issueSessionCodeButton.addEventListener("click", () => {
+    issueSessionCode();
+  });
+  copySessionCodeButton.addEventListener("click", () => {
+    copySessionCode();
+  });
+  restoreSessionButton.addEventListener("click", () => {
+    restoreSession();
+  });
+  resetSessionButton.addEventListener("click", () => {
+    resetSession();
+  });
+}
+
+async function loadConversationHistory(tool, threadId) {
   const container = tool === "prompt" ? promptMessages : mediaMessages;
 
   try {
-    const response = await fetch(
-      `/api/history/${encodeURIComponent(threadId)}?limit=500`,
-      { headers: authHeaders(threadHeaders(tool)) },
+    let target = threadId;
+
+    if (!target) {
+      const list = await getJson(`/api/conversations?tool=${tool}`);
+      const latest = (list.items || [])[0];
+
+      if (!latest) {
+        return;
+      }
+
+      target = latest.thread_id;
+    }
+
+    const data = await getJson(
+      `/api/history/${encodeURIComponent(target)}?limit=500`,
     );
-
-    if (response.status === 403) {
-      // 本地留着的 thread_id 没有对应签名（旧版本残留 / 清过缓存 / 换了密钥），
-      // 读不回来就换一个新会话，别让用户卡在错误里。
-      dropStaleThread(tool);
-      return;
-    }
-
-    if (!response.ok) {
-      return;
-    }
-
-    const data = await response.json();
     const messages = data.messages || [];
+
+    state.threadIds[tool] = target;
+
     if (!messages.length && !data.summary) {
       return;
     }
@@ -1217,11 +1432,10 @@ initializeTextareas();
 initializeMediaTabs();
 initializePromptDialog();
 initializeThreadDeletion();
+initializeHistoryDialog();
+initializeSessionDialog();
 initializeHealth();
-saveThreadId("prompt", loadThreadId("prompt"), loadThreadToken("prompt"));
-saveThreadId("media", loadThreadId("media"), loadThreadToken("media"));
-loadConversationHistory("prompt");
-loadConversationHistory("media");
+bootstrapSession();
 
 try {
   const storedTool = localStorage.getItem("prompt-atelier-tool");

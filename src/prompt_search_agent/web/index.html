@@ -91,6 +91,18 @@
             </svg>
             添加提示词
           </button>
+          <button class="add-prompt-button is-secondary" id="historyButton" type="button">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            </svg>
+            历史对话
+          </button>
+          <button class="add-prompt-button is-secondary" id="sessionButton" type="button">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 3l7 4v5c0 4-3 7-7 9-4-2-7-5-7-9V7l7-4z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+            </svg>
+            会话码
+          </button>
           <button class="add-prompt-button is-secondary" id="deleteThreadButton" type="button">
             <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
               <path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
@@ -322,6 +334,79 @@
         </button>
       </div>
     </form>
+  </dialog>
+
+  <dialog class="prompt-dialog" id="historyDialog" aria-labelledby="historyDialogTitle">
+    <div class="prompt-dialog__panel">
+      <header class="prompt-dialog__header">
+        <span class="eyebrow">SAVED · 7 DAYS</span>
+        <h2 id="historyDialogTitle">历史对话</h2>
+      </header>
+
+      <p class="dialog-hint">只保留最近 7 天，超期自动清理。</p>
+
+      <div class="history-list" id="historyList" role="list"></div>
+
+      <div class="prompt-dialog__actions">
+        <button class="dialog-button dialog-button--secondary" id="closeHistoryDialog" type="button">
+          关闭
+        </button>
+        <button class="dialog-button dialog-button--primary" id="newConversationButton" type="button">
+          新建对话
+        </button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog class="prompt-dialog" id="sessionDialog" aria-labelledby="sessionDialogTitle">
+    <div class="prompt-dialog__panel">
+      <header class="prompt-dialog__header">
+        <span class="eyebrow">SESSION</span>
+        <h2 id="sessionDialogTitle">会话码</h2>
+      </header>
+
+      <p class="dialog-hint">
+        换设备或换浏览器时，输入会话码即可找回全部对话。会话码只显示一次，
+        请自己保存好。
+      </p>
+
+      <div class="session-code" id="sessionCodeBox" hidden>
+        <code id="sessionCodeValue"></code>
+        <button class="dialog-button dialog-button--secondary" id="copySessionCode" type="button">
+          复制
+        </button>
+      </div>
+
+      <div class="prompt-dialog__actions prompt-dialog__actions--split">
+        <button class="dialog-button dialog-button--secondary" id="issueSessionCode" type="button">
+          生成新会话码
+        </button>
+        <button class="dialog-button dialog-button--secondary" id="resetSessionButton" type="button">
+          切换会话
+        </button>
+      </div>
+
+      <label class="prompt-dialog__field">
+        <span>用会话码恢复</span>
+        <input
+          id="restoreCodeInput"
+          type="text"
+          maxlength="32"
+          placeholder="输入 16 位会话码"
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </label>
+
+      <div class="prompt-dialog__actions">
+        <button class="dialog-button dialog-button--secondary" id="closeSessionDialog" type="button">
+          关闭
+        </button>
+        <button class="dialog-button dialog-button--primary" id="restoreSessionButton" type="button">
+          恢复这个会话
+        </button>
+      </div>
+    </div>
   </dialog>
 
   <script src="/static/app.js" defer></script>
