@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import queue
+import sqlite3
 import threading
 import time
 from collections.abc import Callable
@@ -17,7 +18,7 @@ from uuid import uuid4
 
 import uvicorn
 from anyio import CapacityLimiter, to_thread
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -29,7 +30,6 @@ from openai import OpenAIError
 from pydantic import BaseModel, Field, SecretStr
 
 from prompt_search_agent.config import (
-    DEFAULT_THREAD_SECRET,
     PROJECT_ROOT,
     Settings,
 )
@@ -37,8 +37,8 @@ from prompt_search_agent.cost import USAGE
 from prompt_search_agent.guard import (
     DemoGuard,
     install_security,
-    sign_thread_id,
-    verify_thread_id,
+    sign_token,
+    verify_token,
 )
 from prompt_search_agent.image_quota import ImageQuota
 from prompt_search_agent.images import (
@@ -68,7 +68,9 @@ from prompt_search_agent.skills.image_generation import (
 )
 from prompt_search_agent.storage import (
     ConversationRepository,
+    SessionRepository,
     add_prompt_text,
+    generate_recovery_code,
     get_prompt_index_version,
     import_seed_if_empty,
     initialize_database,
@@ -153,7 +155,6 @@ class PromptResponse(BaseModel):
     cached: bool
     generated_from_brief: bool
     thread_id: str
-    thread_token: str = ""
     sources: list[WebSource] = []
 
 
@@ -186,7 +187,6 @@ class MediaResponse(BaseModel):
     note: str
     cached: bool
     thread_id: str
-    thread_token: str = ""
     image_id: str | None = None
     image_url: str | None = None
     image_cached: bool = False
@@ -236,64 +236,148 @@ class DeleteHistoryResponse(BaseModel):
     deleted: int
 
 
+class SessionInfo(BaseModel):
+    has_recovery_code: bool
+
+
+class RecoveryCodeResponse(BaseModel):
+    code: str
+
+
+class RestoreRequest(BaseModel):
+    code: str = Field(min_length=4, max_length=64)
+
+
+class ConversationItem(BaseModel):
+    thread_id: str
+    title: str
+    updated_at: str
+    message_count: int
+
+
+class ConversationListResponse(BaseModel):
+    tool: str
+    items: list[ConversationItem]
+
+
+class CreateConversationRequest(BaseModel):
+    tool: Literal["prompt", "media"] = "prompt"
+
+
 def _secret_ready(value: SecretStr | None) -> bool:
     return value is not None and bool(value.get_secret_value().strip())
 
 
-def _thread_secret(request: Request) -> str:
+def _session_repo(request: Request) -> SessionRepository | None:
     settings = request.app.state.settings
 
     if settings is None:
-        return DEFAULT_THREAD_SECRET
-
-    return settings.thread_secret_value
-
-
-def _require_thread_owner(
-    thread_id: str | None,
-    request: Request,
-    secret: str,
-) -> None:
-    """读取历史必须验签：没有签名就 403，防止翻别人的对话。"""
-    if not thread_id:
-        return
-
-    token = request.headers.get(THREAD_TOKEN_HEADER, "")
-
-    if not verify_thread_id(thread_id, token, secret):
-        raise HTTPException(status_code=403, detail="无权访问该会话")
-
-
-def _resolve_thread_id(
-    thread_id: str | None,
-    request: Request,
-    secret: str,
-) -> str | None:
-    """写入路径：不信任没有签名的 thread_id，直接当作新会话。
-
-    客户端本地存着旧 thread_id 但没有对应签名时（升级、清缓存、换浏览器），
-    严格校验会让它永远 403。这里改成丢弃这个 id 并新开会话 —— 攻击者既
-    写不进别人的历史，也读不到，安全边界不变。
-    """
-    if not thread_id:
         return None
 
-    token = request.headers.get(THREAD_TOKEN_HEADER, "")
-
-    if verify_thread_id(thread_id, token, secret):
-        return thread_id
-
-    LOGGER.warning(
-        "忽略无签名的会话 ID，按新会话处理 trace_id=%s",
-        getattr(request.state, "trace_id", "-"),
+    return SessionRepository(
+        settings.prompt_db_path,
+        settings.sqlite_busy_timeout_ms,
     )
-    return None
 
 
-def _build_prompt_response(
-    result: PromptServiceResult,
-    secret: str,
-) -> PromptResponse:
+def _issue_session_cookie(
+    request: Request,
+    response: Response,
+    session_id: str,
+) -> None:
+    settings = request.app.state.settings
+
+    if settings is None:
+        return
+
+    signature = sign_token(session_id, settings.thread_secret_value)
+    response.set_cookie(
+        settings.session_cookie_name,
+        f"{session_id}.{signature}",
+        max_age=settings.session_cookie_days * 86400,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+
+
+def _current_session(request: Request) -> str | None:
+    """从 cookie 解出当前会话；签名不对或会话记录不存在都返回 None。"""
+    settings = request.app.state.settings
+
+    if settings is None:
+        return None
+
+    raw = request.cookies.get(settings.session_cookie_name)
+
+    if not raw or "." not in raw:
+        return None
+
+    session_id, _, signature = raw.rpartition(".")
+
+    if not verify_token(
+        session_id,
+        signature,
+        settings.thread_secret_value,
+    ):
+        return None
+
+    repo = _session_repo(request)
+
+    if repo is None or repo.get(session_id) is None:
+        return None
+
+    return session_id
+
+
+def _ensure_session(request: Request, response: Response) -> str | None:
+    """没有有效会话就新建一个，并把 cookie 一并下发。"""
+    session_id = _current_session(request)
+
+    if session_id is not None:
+        return session_id
+
+    repo = _session_repo(request)
+    settings = request.app.state.settings
+
+    if repo is None or settings is None:
+        return None
+
+    session_id = uuid4().hex
+
+    try:
+        repo.create(session_id)
+    except sqlite3.OperationalError:
+        # 数据库还没建表（首次启动 / 测试直接注入 settings），补一次再重试
+        initialize_database(
+            settings.prompt_db_path,
+            settings.sqlite_busy_timeout_ms,
+        )
+        repo.create(session_id)
+
+    _issue_session_cookie(request, response, session_id)
+    return session_id
+
+
+def _require_owned_conversation(thread_id: str, request: Request) -> str:
+    """读/删历史必须确认这条对话属于当前 cookie 对应的会话。"""
+    session_id = _current_session(request)
+
+    if session_id is None:
+        raise HTTPException(
+            status_code=403,
+            detail="会话已失效，请刷新页面重试",
+        )
+
+    repo = _session_repo(request)
+
+    if repo is None or not repo.owns_thread(session_id, thread_id):
+        raise HTTPException(status_code=403, detail="无权访问该对话")
+
+    return session_id
+
+
+def _build_prompt_response(result: PromptServiceResult) -> PromptResponse:
     return PromptResponse(
         prompt=result.final_prompt,
         reply=result.reply,
@@ -302,7 +386,6 @@ def _build_prompt_response(
         cached=result.cached,
         generated_from_brief=result.generated_from_brief,
         thread_id=result.thread_id,
-        thread_token=sign_thread_id(result.thread_id, secret),
         sources=result.web_sources,
     )
 
@@ -642,6 +725,122 @@ def create_app(
             headers={"Cache-Control": "no-cache"},
         )
 
+    @app.get("/api/session", response_model=SessionInfo)
+    def read_session(
+        request: Request,
+        response: Response,
+    ) -> SessionInfo:
+        """确保当前浏览器有一个服务端会话，并告知是否已生成恢复码。"""
+        session_id = _ensure_session(request, response)
+        repo = _session_repo(request)
+        has_code = bool(
+            session_id and repo and repo.has_recovery_code(session_id)
+        )
+        return SessionInfo(has_recovery_code=has_code)
+
+    @app.post("/api/session/code", response_model=RecoveryCodeResponse)
+    def issue_recovery_code(
+        request: Request,
+        response: Response,
+    ) -> RecoveryCodeResponse:
+        """生成（或轮换）恢复码。明文只在这里返回一次。"""
+        session_id = _ensure_session(request, response)
+        repo = _session_repo(request)
+
+        if session_id is None or repo is None:
+            raise HTTPException(status_code=503, detail="会话暂不可用")
+
+        code = generate_recovery_code()
+        repo.set_recovery_code(session_id, code)
+        return RecoveryCodeResponse(code=code)
+
+    @app.post("/api/session/restore", response_model=SessionInfo)
+    def restore_session(
+        payload: RestoreRequest,
+        request: Request,
+        response: Response,
+    ) -> SessionInfo:
+        repo = _session_repo(request)
+
+        if repo is None:
+            raise HTTPException(status_code=503, detail="会话暂不可用")
+
+        session_id = repo.find_by_code(payload.code)
+
+        if session_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="恢复码无效或已失效",
+            )
+
+        repo.touch(session_id)
+        _issue_session_cookie(request, response, session_id)
+        return SessionInfo(has_recovery_code=True)
+
+    @app.post("/api/session/reset", response_model=SessionInfo)
+    def reset_session(
+        request: Request,
+        response: Response,
+    ) -> SessionInfo:
+        """换一个全新会话（同一台机器上换人用）。旧会话仍可用恢复码找回。"""
+        repo = _session_repo(request)
+        settings = request.app.state.settings
+
+        if repo is None or settings is None:
+            raise HTTPException(status_code=503, detail="会话暂不可用")
+
+        session_id = uuid4().hex
+        repo.create(session_id)
+        _issue_session_cookie(request, response, session_id)
+        return SessionInfo(has_recovery_code=False)
+
+    @app.get(
+        "/api/conversations",
+        response_model=ConversationListResponse,
+    )
+    def list_conversations(
+        request: Request,
+        response: Response,
+        tool: Literal["prompt", "media"] = "prompt",
+    ) -> ConversationListResponse:
+        session_id = _ensure_session(request, response)
+        repo = _session_repo(request)
+
+        if session_id is None or repo is None:
+            return ConversationListResponse(tool=tool, items=[])
+
+        return ConversationListResponse(
+            tool=tool,
+            items=[
+                ConversationItem(
+                    thread_id=entry.thread_id,
+                    title=entry.title or "未命名对话",
+                    updated_at=entry.updated_at,
+                    message_count=entry.message_count,
+                )
+                for entry in repo.list_conversations(session_id, tool)
+            ],
+        )
+
+    @app.post("/api/conversations")
+    def create_conversation(
+        payload: CreateConversationRequest,
+        request: Request,
+        response: Response,
+    ) -> dict[str, str]:
+        session_id = _ensure_session(request, response)
+        repo = _session_repo(request)
+
+        if session_id is None or repo is None:
+            raise HTTPException(status_code=503, detail="会话暂不可用")
+
+        thread_id = repo.create_conversation(
+            session_id,
+            payload.tool,
+            "新对话",
+        )
+        return {"thread_id": thread_id}
+
     @app.get("/api/version")
     def version(request: Request) -> dict[str, object]:
         settings = request.app.state.settings
@@ -780,13 +979,23 @@ def create_app(
     async def generate_prompt(
         payload: PromptRequest,
         request: Request,
+        response: Response,
         service: Annotated[
             PromptServiceLike,
             Depends(get_prompt_service),
         ],
     ) -> PromptResponse:
-        secret = _thread_secret(request)
-        thread_id = _resolve_thread_id(payload.thread_id, request, secret)
+        session_id = _ensure_session(request, response)
+        repo = _session_repo(request)
+        thread_id = payload.thread_id
+
+        if session_id is not None and repo is not None:
+            thread_id = repo.resolve_thread(
+                session_id,
+                "prompt",
+                payload.thread_id,
+                payload.message[:40],
+            )
 
         try:
             result = await _generate_with_breaker(
@@ -824,20 +1033,33 @@ def create_app(
                 detail="这次没能生成，换个说法再试一次。",
             ) from exc
 
-        return _build_prompt_response(result, secret)
+        if session_id is not None and repo is not None:
+            repo.touch_conversation(result.thread_id)
+
+        return _build_prompt_response(result)
 
     @app.post("/api/prompt/stream")
     async def generate_prompt_stream(
         payload: PromptRequest,
         request: Request,
+        response: Response,
         service: Annotated[
             PromptServiceLike,
             Depends(get_prompt_service),
         ],
     ) -> StreamingResponse:
         """SSE 版本：边跑边推阶段，避免前端干等 6~10 秒。"""
-        secret = _thread_secret(request)
-        thread_id = _resolve_thread_id(payload.thread_id, request, secret)
+        session_id = _ensure_session(request, response)
+        repo = _session_repo(request)
+        thread_id = payload.thread_id
+
+        if session_id is not None and repo is not None:
+            thread_id = repo.resolve_thread(
+                session_id,
+                "prompt",
+                payload.thread_id,
+                payload.message[:40],
+            )
 
         trace_id = getattr(request.state, "trace_id", "-")
         limiter: CapacityLimiter = request.app.state.generation_limiter
@@ -870,7 +1092,7 @@ def create_app(
                     request.app.state.settings,
                     on_token,
                 )
-                events.put(("result", _build_prompt_response(result, secret)))
+                events.put(("result", _build_prompt_response(result)))
             except GenerationCancelled:
                 LOGGER.info("客户端断开，中止生成 trace_id=%s", trace_id)
             except UpstreamUnavailable:
@@ -963,13 +1185,23 @@ def create_app(
     async def generate_media(
         payload: MediaRequest,
         request: Request,
+        response: Response,
         service: Annotated[
             PromptServiceLike,
             Depends(get_prompt_service),
         ],
     ) -> MediaResponse:
-        secret = _thread_secret(request)
-        thread_id = _resolve_thread_id(payload.thread_id, request, secret)
+        session_id = _ensure_session(request, response)
+        repo = _session_repo(request)
+        thread_id = payload.thread_id
+
+        if session_id is not None and repo is not None:
+            thread_id = repo.resolve_thread(
+                session_id,
+                "media",
+                payload.thread_id,
+                payload.message[:40],
+            )
 
         try:
             result = await _generate_with_breaker(
@@ -1073,7 +1305,6 @@ def create_app(
             note=note,
             cached=result.cached,
             thread_id=result.thread_id,
-            thread_token=sign_thread_id(result.thread_id, secret),
             image_id=(
                 image_result.image_id
                 if image_result is not None
@@ -1266,7 +1497,7 @@ def create_app(
                 detail="对话数据库尚未初始化",
             )
 
-        _require_thread_owner(thread_id, request, settings.thread_secret_value)
+        _require_owned_conversation(thread_id, request)
 
         repository = ConversationRepository(
             settings.prompt_db_path,
@@ -1294,10 +1525,10 @@ def create_app(
         thread_id: str,
         request: Request,
     ) -> DeleteHistoryResponse:
-        """删除某个会话的全部消息与摘要。
+        """删除当前会话下的某条对话（消息、摘要一起删）。
 
-        合规要求：用户有权删除自己的对话数据。签名校验与读取历史一致，
-        别人拿不到 thread_token 就删不掉。
+        合规要求：用户有权删除自己的对话数据。只能删自己 cookie 会话下的，
+        别人拿不到你的 cookie 就删不掉。
         """
         settings = request.app.state.settings
 
@@ -1307,16 +1538,16 @@ def create_app(
                 detail="对话数据库尚未初始化",
             )
 
-        _require_thread_owner(thread_id, request, settings.thread_secret_value)
+        session_id = _require_owned_conversation(thread_id, request)
+        repo = _session_repo(request)
 
-        repository = ConversationRepository(
-            settings.prompt_db_path,
-            settings.sqlite_busy_timeout_ms,
-        )
-        deleted = repository.delete_conversation(thread_id)
+        if repo is None:
+            raise HTTPException(status_code=503, detail="会话库不可用")
+
+        deleted = repo.delete_conversation(session_id, thread_id)
         METRICS.inc("history_deleted_total")
         LOGGER.info(
-            "会话已删除 trace_id=%s deleted_messages=%s",
+            "对话已删除 trace_id=%s deleted_messages=%s",
             getattr(request.state, "trace_id", "-"),
             deleted,
         )

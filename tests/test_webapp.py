@@ -5,8 +5,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from prompt_search_agent.config import DEFAULT_THREAD_SECRET, Settings
-from prompt_search_agent.guard import sign_thread_id
+from prompt_search_agent.config import Settings
 from prompt_search_agent.images import ImageGenerationResult
 from prompt_search_agent.services.prompt_service import (
     PromptServiceError,
@@ -86,7 +85,6 @@ def test_prompt_endpoint_returns_prompt() -> None:
         "cached": False,
         "generated_from_brief": False,
         "thread_id": "test-thread",
-        "thread_token": sign_thread_id("test-thread", DEFAULT_THREAD_SECRET),
         "sources": [],
     }
     assert service.queries == ["雪夜里的白猫"]
@@ -285,30 +283,30 @@ def test_history_endpoint_returns_full_conversation(
     )
     initialize_database(settings.prompt_db_path)
     repo = ConversationRepository(settings.prompt_db_path)
-    repo.append_message("history-thread", "user", "first question")
-    repo.append_message("history-thread", "assistant", "first answer")
-    repo.append_message("history-thread", "user", "second question")
-    repo.update_summary("history-thread", "compressed summary", 2)
     app = create_app(
         lambda: FakePromptService(),
         app_settings=settings,
     )
 
     with TestClient(app) as client:
+        # 先建一条归属于本会话的对话，再往里写消息
+        created = client.post(
+            "/api/conversations",
+            json={"tool": "prompt"},
+        )
+        thread_id = created.json()["thread_id"]
+        repo.append_message(thread_id, "user", "first question")
+        repo.append_message(thread_id, "assistant", "first answer")
+        repo.append_message(thread_id, "user", "second question")
+        repo.update_summary(thread_id, "compressed summary", 2)
         response = client.get(
-            "/api/history/history-thread",
+            f"/api/history/{thread_id}",
             params={"limit": 20},
-            headers={
-                "x-thread-token": sign_thread_id(
-                    "history-thread",
-                    settings.thread_secret_value,
-                )
-            },
         )
 
     assert response.status_code == 200
     data = response.json()
-    assert data["thread_id"] == "history-thread"
+    assert data["thread_id"] == thread_id
     assert data["summary"] == "compressed summary"
     assert [message["content"] for message in data["messages"]] == [
         "first question",

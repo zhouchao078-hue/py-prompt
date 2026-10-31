@@ -56,11 +56,15 @@ class Settings(BaseSettings):
     # 生成排队上限，超过直接 503 而不是无限等待。
     max_generation_queue: int = 16
 
-    # 磁盘巡检与数据保留策略。
+    # 磁盘巡检与数据保留策略。对话只留 7 天，演示场景不需要更久。
     janitor_interval_seconds: float = 3600.0
     cache_retention_days: int = 30
-    conversation_retention_days: int = 90
+    conversation_retention_days: int = 7
     min_free_disk_gb: float = 2.0
+
+    # 会话 cookie：身份存在服务端，浏览器只拿一个 HttpOnly cookie。
+    session_cookie_name: str = "atelier_session"
+    session_cookie_days: int = 180
 
     # 图片生成配额：小时总量按 IP 计，同时在飞的张数按进程计。
     image_per_hour: int = 6

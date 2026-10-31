@@ -170,28 +170,25 @@ def test_history_limit_is_clamped(tmp_path: Path) -> None:
     settings = settings_for(tmp_path, demo_access_code=SecretStr(ACCESS_CODE))
     repo = ConversationRepository(settings.prompt_db_path)
 
-    for index in range(3):
-        repo.append_message("clamp-thread", "user", f"m{index}")
-
-    from prompt_search_agent.guard import sign_thread_id
-
-    headers = {
-        **auth(),
-        "x-thread-token": sign_thread_id(
-            "clamp-thread",
-            settings.thread_secret_value,
-        ),
-    }
-
     with build_client(settings, tmp_path) as client:
-        zero = client.get("/api/history/clamp-thread?limit=0", headers=headers)
+        created = client.post(
+            "/api/conversations",
+            json={"tool": "prompt"},
+            headers=auth(),
+        )
+        thread_id = created.json()["thread_id"]
+
+        for index in range(3):
+            repo.append_message(thread_id, "user", f"m{index}")
+
+        zero = client.get(f"/api/history/{thread_id}?limit=0", headers=auth())
         negative = client.get(
-            "/api/history/clamp-thread?limit=-5",
-            headers=headers,
+            f"/api/history/{thread_id}?limit=-5",
+            headers=auth(),
         )
         huge = client.get(
-            "/api/history/clamp-thread?limit=100000",
-            headers=headers,
+            f"/api/history/{thread_id}?limit=100000",
+            headers=auth(),
         )
 
     assert len(zero.json()["messages"]) == 1

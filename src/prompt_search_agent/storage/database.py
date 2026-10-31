@@ -88,6 +88,36 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
 
 CREATE INDEX IF NOT EXISTS idx_conversation_messages_thread
 ON conversation_messages(thread_id, id);
+
+-- 会话身份：浏览器只持有 cookie，恢复码存在这里（只存哈希）
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id TEXT PRIMARY KEY,
+    token_hash TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_token
+ON sessions(token_hash);
+
+-- 会话 → 多条目对话的映射；一个会话每个工具可以有多条历史
+CREATE TABLE IF NOT EXISTS session_conversations (
+    thread_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (session_id)
+        REFERENCES sessions(session_id)
+        ON DELETE CASCADE,
+    FOREIGN KEY (thread_id)
+        REFERENCES conversations(thread_id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_conversations_lookup
+ON session_conversations(session_id, tool, updated_at DESC);
 CREATE TRIGGER IF NOT EXISTS prompts_ai
 AFTER INSERT ON prompts
 BEGIN

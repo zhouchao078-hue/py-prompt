@@ -166,21 +166,21 @@ class DemoGuard:
         )
 
 
-def sign_thread_id(thread_id: str, secret: str) -> str:
-    """给会话 ID 签名，客户端拿签名才能读历史。"""
+def sign_token(value: str, secret: str) -> str:
+    """给任意标识签名；会话 cookie 用它防篡改。"""
     digest = hmac.new(
         secret.encode("utf-8"),
-        thread_id.encode("utf-8"),
+        value.encode("utf-8"),
         hashlib.sha256,
     )
     return digest.hexdigest()[:32]
 
 
-def verify_thread_id(thread_id: str, token: str, secret: str) -> bool:
+def verify_token(value: str, token: str, secret: str) -> bool:
     if not token:
         return False
 
-    return hmac.compare_digest(sign_thread_id(thread_id, secret), token)
+    return hmac.compare_digest(sign_token(value, secret), token)
 
 
 def install_security(app: FastAPI, settings: Settings | None) -> None:

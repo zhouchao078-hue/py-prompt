@@ -6,7 +6,6 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from prompt_search_agent.config import Settings
-from prompt_search_agent.guard import sign_thread_id
 from prompt_search_agent.services.prompt_service import PromptServiceResult
 from prompt_search_agent.storage import (
     ConversationRepository,
@@ -137,32 +136,60 @@ def test_daily_quota_triggers_503(tmp_path: Path) -> None:
         assert post_prompt(client) == 503
 
 
-def test_history_requires_matching_thread_token(tmp_path: Path) -> None:
-    settings = build_settings(tmp_path)
-    thread_id = "security-thread"
+def create_conversation(client, tool: str = "prompt") -> str:
+    response = client.post(
+        "/api/conversations",
+        json={"tool": tool},
+        headers={"Authorization": f"Bearer {ACCESS_CODE}"},
+    )
+    assert response.status_code == 200
+    return response.json()["thread_id"]
 
-    with build_client(settings) as client:
-        denied = client.get(
+
+def test_history_is_scoped_to_the_session(tmp_path: Path) -> None:
+    """用别人的 thread_id 读不到内容，也写不进去。"""
+    settings = build_settings(tmp_path)
+
+    with build_client(settings) as owner:
+        thread_id = create_conversation(owner)
+        ConversationRepository(settings.prompt_db_path).append_message(
+            thread_id,
+            "user",
+            "别人的私密对话",
+        )
+        mine = owner.get(
             f"/api/history/{thread_id}",
             headers={"Authorization": f"Bearer {ACCESS_CODE}"},
         )
-        allowed = client.get(
+
+    assert mine.status_code == 200
+    assert [m["content"] for m in mine.json()["messages"]] == [
+        "别人的私密对话"
+    ]
+
+    # 另一个浏览器：有自己的会话，但没有这条对话的归属
+    with build_client(settings) as other:
+        other.get(
+            "/api/session",
+            headers={"Authorization": f"Bearer {ACCESS_CODE}"},
+        )
+        leak = other.get(
             f"/api/history/{thread_id}",
-            headers={
-                "Authorization": f"Bearer {ACCESS_CODE}",
-                "x-thread-token": sign_thread_id(thread_id, THREAD_SECRET),
-            },
+            headers={"Authorization": f"Bearer {ACCESS_CODE}"},
+        )
+        missing = other.get(
+            "/api/history/never-existed",
+            headers={"Authorization": f"Bearer {ACCESS_CODE}"},
         )
 
-    assert denied.status_code == 403
-    assert allowed.status_code == 200
+    assert leak.status_code == 403
+    assert missing.status_code == 403
 
 
-def test_prompt_with_foreign_thread_id_starts_new_session(tmp_path: Path) -> None:
-    """写入路径不信任没有签名的 thread_id：丢弃它并新开会话，而不是 403。
-
-    否则老客户端（本地存着旧 thread_id、没有签名）会永久卡死。
-    """
+def test_prompt_with_unknown_thread_id_starts_new_conversation(
+    tmp_path: Path,
+) -> None:
+    """传入不属于本会话的 thread_id 时，不报错也不串号，直接开新的。"""
     settings = build_settings(tmp_path)
 
     with build_client(settings) as client:
@@ -173,62 +200,44 @@ def test_prompt_with_foreign_thread_id_starts_new_session(tmp_path: Path) -> Non
         )
 
     assert response.status_code == 200
-
-    data = response.json()
-    # 请求里那个别人的会话 ID 被丢弃了
-    assert data["thread_id"] != "someone-else"
-    # 返回的新会话带着可用签名
-    assert data["thread_token"] == sign_thread_id(
-        data["thread_id"],
-        THREAD_SECRET,
-    )
+    assert response.json()["thread_id"] != "someone-else"
 
 
-def test_foreign_thread_id_does_not_reach_that_conversation(
+def test_unknown_thread_id_does_not_reach_that_conversation(
     tmp_path: Path,
 ) -> None:
-    """丢弃是安全的：写不进别人的会话，也读不到别人的历史。"""
+    """丢弃是安全的：写不进别人的对话，也读不到。"""
     settings = build_settings(tmp_path)
     repo = ConversationRepository(settings.prompt_db_path)
-    repo.append_message("victim-thread", "user", "别人的私密对话")
 
-    with build_client(settings) as client:
-        client.post(
+    with build_client(settings) as owner:
+        victim = create_conversation(owner)
+        repo.append_message(victim, "user", "别人的私密对话")
+
+    with build_client(settings) as intruder:
+        intruder.post(
             "/api/prompt",
-            json={"message": "雪夜白猫", "thread_id": "victim-thread"},
-            headers={"Authorization": f"Bearer {ACCESS_CODE}"},
-        )
-        leak = client.get(
-            "/api/history/victim-thread",
+            json={"message": "雪夜白猫", "thread_id": victim},
             headers={"Authorization": f"Bearer {ACCESS_CODE}"},
         )
 
-    # 没签名依然读不到别人的历史
-    assert leak.status_code == 403
-    # 原文也没有被这次请求污染
-    messages = repo.list_messages("victim-thread")
+    messages = repo.list_messages(victim)
     assert [item.content for item in messages] == ["别人的私密对话"]
 
 
-def test_prompt_accepts_own_thread_id(tmp_path: Path) -> None:
+def test_prompt_continues_own_conversation(tmp_path: Path) -> None:
     settings = build_settings(tmp_path)
-    thread_id = "my-own-thread"
 
     with build_client(settings) as client:
+        thread_id = create_conversation(client)
         response = client.post(
             "/api/prompt",
             json={"message": "雪夜白猫", "thread_id": thread_id},
-            headers={
-                "Authorization": f"Bearer {ACCESS_CODE}",
-                "x-thread-token": sign_thread_id(thread_id, THREAD_SECRET),
-            },
+            headers={"Authorization": f"Bearer {ACCESS_CODE}"},
         )
 
     assert response.status_code == 200
-    assert response.json()["thread_token"] == sign_thread_id(
-        thread_id,
-        THREAD_SECRET,
-    )
+    assert response.json()["thread_id"] == thread_id
 
 
 def test_readonly_library_blocks_writes(tmp_path: Path) -> None:
@@ -258,42 +267,54 @@ def test_response_carries_trace_id(tmp_path: Path) -> None:
     assert response.headers.get("x-request-id")
 
 
-def test_delete_history_requires_matching_token(tmp_path: Path) -> None:
+def test_delete_history_requires_ownership(tmp_path: Path) -> None:
     settings = build_settings(tmp_path)
-    thread_id = "delete-me"
+    repo = ConversationRepository(settings.prompt_db_path)
 
-    with build_client(settings) as client:
-        denied = client.delete(
+    with build_client(settings) as owner:
+        thread_id = create_conversation(owner)
+        repo.append_message(thread_id, "user", "hello")
+        repo.append_message(thread_id, "assistant", "hi")
+        headers = {"Authorization": f"Bearer {ACCESS_CODE}"}
+        deleted = owner.delete(f"/api/history/{thread_id}", headers=headers)
+        after = owner.get(f"/api/history/{thread_id}", headers=headers)
+
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] == 2
+    # 删掉之后归属也断了，再读就是 403（不区分"不存在"和"不属于你"）
+    assert after.status_code == 403
+
+    # 会话删除后归属也断了：另一个浏览器仍然读不到
+    with build_client(settings) as other:
+        other.get(
+            "/api/session",
+            headers={"Authorization": f"Bearer {ACCESS_CODE}"},
+        )
+        denied = other.delete(
             f"/api/history/{thread_id}",
             headers={"Authorization": f"Bearer {ACCESS_CODE}"},
         )
-        allowed = client.delete(
+
+    assert denied.status_code == 403
+
+
+def test_foreign_conversation_cannot_be_deleted(tmp_path: Path) -> None:
+    settings = build_settings(tmp_path)
+    repo = ConversationRepository(settings.prompt_db_path)
+
+    with build_client(settings) as owner:
+        thread_id = create_conversation(owner)
+        repo.append_message(thread_id, "user", "别删我的")
+
+    with build_client(settings) as intruder:
+        intruder.get(
+            "/api/session",
+            headers={"Authorization": f"Bearer {ACCESS_CODE}"},
+        )
+        denied = intruder.delete(
             f"/api/history/{thread_id}",
-            headers={
-                "Authorization": f"Bearer {ACCESS_CODE}",
-                "x-thread-token": sign_thread_id(thread_id, THREAD_SECRET),
-            },
+            headers={"Authorization": f"Bearer {ACCESS_CODE}"},
         )
 
     assert denied.status_code == 403
-    assert allowed.status_code == 200
-
-
-def test_deleted_history_is_gone(tmp_path: Path) -> None:
-    settings = build_settings(tmp_path)
-    repo = ConversationRepository(settings.prompt_db_path)
-    thread_id = "wipe-me"
-    repo.append_message(thread_id, "user", "hello")
-    repo.append_message(thread_id, "assistant", "hi")
-    headers = {
-        "Authorization": f"Bearer {ACCESS_CODE}",
-        "x-thread-token": sign_thread_id(thread_id, THREAD_SECRET),
-    }
-
-    with build_client(settings) as client:
-        deleted = client.delete(f"/api/history/{thread_id}", headers=headers)
-        after = client.get(f"/api/history/{thread_id}", headers=headers)
-
-    assert deleted.json()["deleted"] == 2
-    assert after.status_code == 200
-    assert after.json()["messages"] == []
+    assert [m.content for m in repo.list_messages(thread_id)] == ["别删我的"]
