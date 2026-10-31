@@ -72,6 +72,44 @@ PROCESS_QUESTION_PATTERN = re.compile(
     r"(怎么|如何|怎样|为什么|为何|用什么|什么方法|哪些步骤|哪一步)"
 )
 
+# "改这个：xxx" 里被引用文本的最短长度，太短的多半不是提示词。
+INLINE_PROMPT_MIN_CHARS = 4
+
+INLINE_QUOTE_PATTERNS = (
+    r"「([^」]+)」",
+    r"“([^”]+)”",
+    r'"([^"]+)"',
+    r"'([^']+)'",
+)
+
+
+def extract_inline_prompt(user_query: str) -> str:
+    """从指令里抠出"要改的那段文本"。
+
+    只认明确的引用标记（引号、冒号），不做"看起来像提示词"的猜测：
+    「把围巾改成红色」这种没有标记的，就是真的没说改哪一版，应当追问。
+    """
+    for pattern in INLINE_QUOTE_PATTERNS:
+        match = re.search(pattern, user_query)
+
+        if match:
+            candidate = match.group(1).strip()
+
+            if len(candidate) >= INLINE_PROMPT_MIN_CHARS:
+                return candidate
+
+    for separator in ("：", ":"):
+        if separator not in user_query:
+            continue
+
+        _, _, tail = user_query.partition(separator)
+        candidate = tail.strip()
+
+        if len(candidate) >= INLINE_PROMPT_MIN_CHARS:
+            return candidate
+
+    return ""
+
 MODIFY_REQUEST_PATTERN = re.compile(
     (
         r"(改写|修改|重写|润色|精简|缩短|翻译|"
@@ -214,6 +252,13 @@ class PromptService:
             intent_result is not None
             and intent_result.intent == "regenerate"
         ):
+            if not self._has_previous_prompt(snapshot, conversation_context):
+                return self._clarify_missing_base(
+                    thread_id,
+                    user_query,
+                    intent_result,
+                )
+
             final_prompt = self._regenerate_from_context(
                 user_query,
                 conversation_context,
@@ -238,10 +283,22 @@ class PromptService:
             intent_result is not None
             and intent_result.intent == "modify"
         ):
+            base_prompt = (snapshot.previous_prompt or "").strip()
+
+            if not base_prompt:
+                base_prompt = extract_inline_prompt(user_query)
+
+            if not base_prompt:
+                return self._clarify_missing_base(
+                    thread_id,
+                    user_query,
+                    intent_result,
+                )
+
             final_prompt = self._modify_from_context(
                 user_query,
                 conversation_context,
-                snapshot.previous_prompt or "",
+                base_prompt,
                 on_token,
             )
             self._save_turn(
@@ -517,6 +574,44 @@ class PromptService:
                 "intent": "modify",
                 "reason": "用户明确要求改写现有提示词",
             }
+        )
+
+    @staticmethod
+    def _has_previous_prompt(
+        snapshot: ConversationSnapshot,
+        conversation_context: str,
+    ) -> bool:
+        if (snapshot.previous_prompt or "").strip():
+            return True
+
+        return bool(conversation_context.strip())
+
+    def _clarify_missing_base(
+        self,
+        thread_id: str,
+        user_query: str,
+        intent_result: IntentResult,
+    ) -> PromptServiceResult:
+        """没有"上一版"可改时先问清楚，不要凭空编一版出来。"""
+        lead = (
+            "我这边还没有可重做的一版提示词。"
+            if intent_result.intent == "regenerate"
+            else "我这边还没有上一版提示词可以改。"
+        )
+        reply = (
+            f"{lead}你可以：\n"
+            "① 先描述画面，我生成一版，再让我调整；\n"
+            "② 直接把要改的提示词贴进来，或用冒号跟在指令后面，例如："
+            "「把这句话改成电影感：一只白猫坐在雪山上」。"
+        )
+        self._save_clarification(thread_id, user_query, reply)
+
+        return PromptServiceResult(
+            reply=reply,
+            response_type="clarification",
+            intent=intent_result.intent,
+            cached=False,
+            thread_id=thread_id,
         )
 
     @staticmethod

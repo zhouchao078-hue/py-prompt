@@ -24,3 +24,4 @@
 {"id": "c024", "bucket": "compose", "query": "水下的婚纱，光影流动，唯美", "expect": {"route": "compose", "include": [["婚纱"], ["水"]], "exclude": []}, "notes": "「婚纱」57 条仅在分类里"}
 {"id": "c025", "bucket": "compose", "query": "一大片红玫瑰，花园，柔和光线", "expect": {"route": "compose", "include": [["玫瑰"], ["花"]], "exclude": []}, "notes": "「玫瑰」34 条仅在分类里"}
 {"id": "c026", "bucket": "intent", "query": "你用什么方法修改提示词的", "expect": {"route": "message", "include": [], "exclude": []}, "notes": "问方法属于提问，不能被当成修改指令（曾经会返回一份提示词）", "holdout": false}
+{"id": "c027", "bucket": "modify", "query": "把这句话润色一下", "expect": {"route": "clarification", "include": [], "exclude": []}, "notes": "空上下文下裸修改指令应追问，不能凭空生成一版", "holdout": false}

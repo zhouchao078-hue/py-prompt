@@ -13,6 +13,13 @@ from prompt_search_agent.storage import (
 )
 
 
+def seed_previous_prompt(db_path, thread_id: str, prompt: str) -> None:
+    """给会话放一版"上一版提示词"，模拟已经生成过一版。"""
+    repo = ConversationRepository(db_path)
+    repo.ensure_conversation(thread_id)
+    repo.update_after_turn(thread_id, None, prompt)
+
+
 class ContextAwareSkill:
     def __init__(self) -> None:
         self.contexts: list[str] = []
@@ -297,6 +304,11 @@ def test_regenerate_skips_search_and_uses_variation_hint(
         prompt_db_path=tmp_path / "prompt_index.sqlite3",
     )
     initialize_database(settings.prompt_db_path)
+    seed_previous_prompt(
+        settings.prompt_db_path,
+        "thread-regenerate",
+        "一只白猫坐在雪山上",
+    )
     skill = ContextAwareSkill()
     regenerate_chain = FakeRegenerateChain()
     service = PromptService(
@@ -329,6 +341,12 @@ def test_modify_request_rewrites_without_search(
         prompt_db_path=tmp_path / "prompt_index.sqlite3",
     )
     initialize_database(settings.prompt_db_path)
+    # 没有上一版时应当追问，所以这里先放一版可改的提示词
+    seed_previous_prompt(
+        settings.prompt_db_path,
+        "thread-modify",
+        "一只黄色海绵角色站在海底",
+    )
     skill = ContextAwareSkill()
     modify_chain = FakeModifyChain()
     service = PromptService(
