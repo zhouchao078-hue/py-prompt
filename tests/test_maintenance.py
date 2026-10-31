@@ -115,4 +115,6 @@ def test_janitor_reports_counts(tmp_path: Path) -> None:
     result = run_janitor(settings)
 
     assert result["cache"] == 1
-    assert set(result) == {"images", "cache", "conversations"}
+    assert set(result) == {"images", "cache", "conversations", "backups"}
+    # 回收之后会顺手留一份快照
+    assert result["backups"] == 1

@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     session_cookie_name: str = "atelier_session"
     session_cookie_days: int = 180
 
+    # 数据库快照：每小时一份，保留最近 N 份（24 份 ≈ 一天）
+    backup_keep: int = 24
+
     # 图片生成配额：小时总量按 IP 计，同时在飞的张数按进程计。
     image_per_hour: int = 6
     image_max_in_flight: int = 4

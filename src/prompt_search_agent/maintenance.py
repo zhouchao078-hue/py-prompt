@@ -8,6 +8,7 @@ import logging
 import shutil
 from pathlib import Path
 
+from prompt_search_agent.backup import create_backup
 from prompt_search_agent.config import Settings
 from prompt_search_agent.storage.conversation import (
     delete_stale_conversations,
@@ -80,13 +81,27 @@ def run_janitor(settings: Settings) -> dict[str, int]:
     except Exception:
         LOGGER.warning("回收数据库空间失败", exc_info=True)
 
+    # 回收之后再快照：拿到的是干净、一致的状态。
+    backed_up = 0
+
+    try:
+        if create_backup(
+            settings.prompt_db_path,
+            settings.sqlite_busy_timeout_ms,
+            settings.backup_keep,
+        ):
+            backed_up = 1
+    except Exception:
+        LOGGER.warning("数据库快照失败", exc_info=True)
+
     free_gb = disk_free_bytes(settings.data_dir) / 1e9
 
     LOGGER.info(
-        "巡检完成: 图片 %s 张, 缓存 %s 行, 会话 %s 条, 剩余磁盘 %.1fGB",
+        "巡检完成: 图片 %s 张, 缓存 %s 行, 会话 %s 条, 快照 %s, 剩余磁盘 %.1fGB",
         removed_images,
         removed_cache,
         removed_conversations,
+        backed_up,
         free_gb,
     )
 
@@ -94,4 +109,5 @@ def run_janitor(settings: Settings) -> dict[str, int]:
         "images": removed_images,
         "cache": removed_cache,
         "conversations": removed_conversations,
+        "backups": backed_up,
     }

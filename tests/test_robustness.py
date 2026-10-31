@@ -202,7 +202,13 @@ def test_janitor_survives_internal_failure(tmp_path: Path, monkeypatch) -> None:
 
     result = run_janitor(settings)
 
-    assert result == {"images": 0, "cache": 0, "conversations": 0}
+    # 回收全炸了也要正常返回；快照不受影响，照常生成
+    assert result == {
+        "images": 0,
+        "cache": 0,
+        "conversations": 0,
+        "backups": 1,
+    }
 
 
 def test_breaker_is_thread_safe_under_contention() -> None:

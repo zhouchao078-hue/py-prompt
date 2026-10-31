@@ -266,10 +266,24 @@ L2 会绕过缓存（命中缓存一律报 `compose`，会把真实路由抹平�
 |---|---|---|
 | 生成图片 | 7 天 | `IMAGE_RETENTION_DAYS` |
 | 查询缓存 | 30 天 | `CACHE_RETENTION_DAYS` |
-| 会话历史 | 90 天（按最后更新时间） | `CONVERSATION_RETENTION_DAYS` |
+| 会话历史 | 7 天（按最后更新时间） | `CONVERSATION_RETENTION_DAYS` |
+| 数据库快照 | 最近 24 份（约一天） | `BACKUP_KEEP` |
 | 用户主动删除 | 立即 | `DELETE /api/history/{thread_id}` |
 
 清理由常驻巡检任务每小时执行一次，删除后通过 `PRAGMA incremental_vacuum` 把空间还给文件系统，避免库文件只涨不缩。
+
+### 备份
+
+巡检在回收之后用 `VACUUM INTO` 写一份一致性快照到 `data/indexes/backups/`，
+按时间戳命名，只保留最近 `BACKUP_KEEP` 份。
+
+```bash
+uv run python scripts/backup.py            # 立刻备份一份
+uv run python scripts/backup.py --list     # 看现有快照
+uv run python scripts/backup.py --restore prompt_index-20261031-141927.sqlite3
+```
+
+恢复前必须先停服务，脚本会把 `-wal` / `-shm` 一并清掉，否则会读到旧库的未提交内容。
 
 ### 关键指标
 
