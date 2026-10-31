@@ -67,6 +67,11 @@ from prompt_search_agent.tools import (
 
 LOGGER = logging.getLogger(__name__)
 
+# 问"怎么改的/为什么这样改/用什么方法"属于提问，不是修改指令。
+PROCESS_QUESTION_PATTERN = re.compile(
+    r"(怎么|如何|怎样|为什么|为何|用什么|什么方法|哪些步骤|哪一步)"
+)
+
 MODIFY_REQUEST_PATTERN = re.compile(
     (
         r"(改写|修改|重写|润色|精简|缩短|翻译|"
@@ -497,6 +502,11 @@ class PromptService:
             user_query,
             flags=re.IGNORECASE,
         ):
+            return intent_result
+
+        # 在问"怎么改的、为什么改、用什么方法"时，句子里也会出现
+        # "修改"，但那是在问流程，不能当成修改指令。
+        if PROCESS_QUESTION_PATTERN.search(user_query):
             return intent_result
 
         if not MODIFY_REQUEST_PATTERN.search(user_query):

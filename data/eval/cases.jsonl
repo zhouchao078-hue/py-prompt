@@ -23,3 +23,4 @@
 {"id": "c023", "bucket": "compose", "query": "一位穿汉服的少女站在雪地里，唯美", "expect": {"route": "compose", "include": [["汉服"], ["少女", "女子", "女孩"]], "exclude": []}, "notes": "「汉服」只存在分类里，是分类进索引的回归护栏"}
 {"id": "c024", "bucket": "compose", "query": "水下的婚纱，光影流动，唯美", "expect": {"route": "compose", "include": [["婚纱"], ["水"]], "exclude": []}, "notes": "「婚纱」57 条仅在分类里"}
 {"id": "c025", "bucket": "compose", "query": "一大片红玫瑰，花园，柔和光线", "expect": {"route": "compose", "include": [["玫瑰"], ["花"]], "exclude": []}, "notes": "「玫瑰」34 条仅在分类里"}
+{"id": "c026", "bucket": "intent", "query": "你用什么方法修改提示词的", "expect": {"route": "message", "include": [], "exclude": []}, "notes": "问方法属于提问，不能被当成修改指令（曾经会返回一份提示词）", "holdout": false}
