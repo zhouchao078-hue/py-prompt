@@ -25,7 +25,7 @@ jobs:
     name: 质量门
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: astral-sh/setup-uv@v5
         with:
@@ -69,7 +69,7 @@ jobs:
     outputs:
       ref: ${{ steps.meta.outputs.ref }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - id: meta
         name: 计算镜像标签
@@ -102,7 +102,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 检查部署密钥
         id: guard
