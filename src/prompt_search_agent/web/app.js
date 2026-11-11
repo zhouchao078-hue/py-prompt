@@ -1,6 +1,14 @@
 const state = {
   tool: "prompt",
   mediaType: "image",
+  sessionDrawerOpen: false,
+  sessionDrawerItems: [],
+  sessionDrawerRequest: 0,
+  conversationLoadRequests: {
+    prompt: 0,
+    media: 0,
+    agent: 0,
+  },
   busy: {
     prompt: false,
     media: false,
@@ -24,6 +32,13 @@ const state = {
 
 const toolButtons = Array.from(document.querySelectorAll(".tool-item"));
 const panels = Array.from(document.querySelectorAll(".tool-panel"));
+const appShell = document.querySelector(".app-shell");
+const sessionDrawer = document.getElementById("sessionDrawer");
+const sessionDrawerTitle = document.getElementById("sessionDrawerTitle");
+const sessionDrawerList = document.getElementById("sessionDrawerList");
+const sessionDrawerSearch = document.getElementById("sessionDrawerSearch");
+const closeSessionDrawer = document.getElementById("closeSessionDrawer");
+const drawerNewConversation = document.getElementById("drawerNewConversation");
 const topbarKicker = document.getElementById("topbarKicker");
 const topbarTitle = document.getElementById("topbarTitle");
 const systemStatus = document.getElementById("systemStatus");
@@ -39,6 +54,8 @@ const mediaMessages = document.getElementById("mediaMessages");
 const agentForm = document.getElementById("agentForm");
 const agentInput = document.getElementById("agentInput");
 const agentMessages = document.getElementById("agentMessages");
+const agentSessionSelect = document.getElementById("agentSessionSelect");
+const agentNewConversation = document.getElementById("agentNewConversation");
 const agentLiveStatus = document.getElementById("agentLiveStatus");
 const agentTraceStatus = document.getElementById("agentTraceStatus");
 const agentTraceDetail = document.getElementById("agentTraceDetail");
@@ -71,6 +88,11 @@ const editPreviewImage = document.getElementById("editPreviewImage");
 const downloadAgentImage = document.getElementById("downloadAgentImage");
 const copyAgentPrompt = document.getElementById("copyAgentPrompt");
 const editAgentImage = document.getElementById("editAgentImage");
+
+const imageViewerDialog = document.getElementById("imageViewerDialog");
+const imageViewerImage = document.getElementById("imageViewerImage");
+const imageViewerCaption = document.getElementById("imageViewerCaption");
+const closeImageViewer = document.getElementById("closeImageViewer");
 
 const imageEditorDialog = document.getElementById("imageEditorDialog");
 const closeImageEditor = document.getElementById("closeImageEditor");
@@ -110,6 +132,9 @@ const cancelPromptDialog = document.getElementById("cancelPromptDialog");
 const savePromptButton = document.getElementById("savePromptButton");
 
 const historyButton = document.getElementById("historyButton");
+const topbarNewConversation = document.getElementById(
+  "topbarNewConversation",
+);
 const historyDialog = document.getElementById("historyDialog");
 const historyList = document.getElementById("historyList");
 const closeHistoryDialog = document.getElementById("closeHistoryDialog");
@@ -139,6 +164,12 @@ const toolCopy = {
     kicker: "AGENT STUDIO",
     title: "任务 Agent",
   },
+};
+
+const sessionDrawerTitles = {
+  prompt: "提示词会话",
+  media: "影像会话",
+  agent: "Agent 会话",
 };
 
 const DEMO_TOKEN_KEY = "prompt-atelier-token";
@@ -328,22 +359,85 @@ async function copyPromptForTarget(target) {
   await navigator.clipboard.writeText(prompt);
 }
 
+function showImageViewer(objectUrl, prompt) {
+  if (!objectUrl) {
+    return;
+  }
+
+  imageViewerImage.src = objectUrl;
+  imageViewerImage.alt = prompt || "生成图片";
+  imageViewerCaption.textContent = prompt || "";
+
+  if (!imageViewerDialog.open) {
+    imageViewerDialog.showModal();
+  }
+
+  requestAnimationFrame(() => closeImageViewer.focus());
+}
+
+function openImageViewer(target) {
+  const context = state.imageContexts[target];
+  showImageViewer(context?.objectUrl, context?.prompt);
+}
+
+function closeImageViewerDialog() {
+  if (imageViewerDialog.open) {
+    imageViewerDialog.close();
+  }
+}
+
+function bindImageViewerAction(image, openViewer) {
+  image.addEventListener("dblclick", () => {
+    openViewer();
+  });
+  image.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      openViewer();
+    }
+  });
+
+  if (window.matchMedia("(pointer: coarse)").matches) {
+    image.addEventListener("click", openViewer);
+  }
+}
+
+function bindImageViewer(image, target) {
+  bindImageViewerAction(image, () => openImageViewer(target));
+}
+
 function loadThreadId(tool) {
   const storageKey = `prompt-atelier-thread-${tool}`;
 
   try {
-    const existing = localStorage.getItem(storageKey);
-
-    if (existing) {
-      return existing;
-    }
-
-    const created = crypto.randomUUID();
-    localStorage.setItem(storageKey, created);
-    return created;
+    return localStorage.getItem(storageKey) || "";
   } catch {
-    return crypto.randomUUID();
+    return "";
   }
+}
+
+function restoreThreadPointers() {
+  ["prompt", "media", "agent"].forEach((tool) => {
+    const threadId = loadThreadId(tool);
+
+    if (threadId) {
+      state.threadIds[tool] = threadId;
+    }
+  });
+}
+
+function clearThreadPointers() {
+  ["prompt", "media", "agent"].forEach((tool) => {
+    state.threadIds[tool] = "";
+    state.threadTokens[tool] = "";
+
+    try {
+      localStorage.removeItem(`prompt-atelier-thread-${tool}`);
+      localStorage.removeItem(`prompt-atelier-thread-token-${tool}`);
+    } catch {
+      // Keep the in-memory reset when storage is unavailable.
+    }
+  });
 }
 
 function loadThreadToken(tool) {
@@ -399,6 +493,12 @@ function resetThread(tool) {
   // 只清界面与"当前对话"指针；服务端会话和 cookie 都不动
   state.threadIds[tool] = "";
   state.threadTokens[tool] = "";
+  try {
+    localStorage.removeItem(`prompt-atelier-thread-${tool}`);
+    localStorage.removeItem(`prompt-atelier-thread-token-${tool}`);
+  } catch {
+    // Keep the in-memory reset when storage is unavailable.
+  }
 
   const container = messageContainer(tool);
   container.replaceChildren();
@@ -454,6 +554,7 @@ function initializeThreadDeletion() {
 
 function switchTool(toolName) {
   state.tool = toolName;
+  state.sessionDrawerRequest += 1;
 
   toolButtons.forEach((button) => {
     const active = button.dataset.tool === toolName;
@@ -483,6 +584,20 @@ function switchTool(toolName) {
       ? agentInput
       : promptInput;
   requestAnimationFrame(() => activeInput.focus());
+
+  if (toolName === "agent") {
+    refreshAgentSessionSelector();
+  }
+
+  renderSessionDrawerList();
+
+  if (state.sessionDrawerOpen) {
+    refreshSessionDrawer();
+  }
+
+  if (isCompactSessionLayout()) {
+    setSessionDrawerOpen(false);
+  }
 }
 
 function resizeTextarea(textarea) {
@@ -534,6 +649,9 @@ function appendMessage(
     sources = [],
     actionLabel = "",
     onAction = null,
+    imageUrl = "",
+    imageObjectUrl = "",
+    imagePrompt = "",
   } = {},
 ) {
   const article = document.createElement("article");
@@ -562,6 +680,45 @@ function appendMessage(
   body.className = "message-body";
   body.textContent = text;
   article.appendChild(body);
+
+  if (imageUrl || imageObjectUrl) {
+    const figure = document.createElement("figure");
+    figure.className = "message-image";
+
+    const image = document.createElement("img");
+    image.alt = imagePrompt || text || "生成图片";
+    image.tabIndex = 0;
+    figure.appendChild(image);
+    article.insertBefore(figure, body);
+
+    let resolvedObjectUrl = imageObjectUrl;
+    const openMessageImage = () => {
+      showImageViewer(resolvedObjectUrl, imagePrompt || text);
+    };
+    bindImageViewerAction(image, openMessageImage);
+
+    const setImageSource = (objectUrl) => {
+      resolvedObjectUrl = objectUrl;
+      image.dataset.objectUrl = objectUrl;
+      image.src = objectUrl;
+      figure.classList.remove("is-loading");
+    };
+
+    if (imageObjectUrl) {
+      setImageSource(imageObjectUrl);
+    } else {
+      figure.classList.add("is-loading");
+      fetchImageBlob(imageUrl)
+        .then((blob) => {
+          setImageSource(URL.createObjectURL(blob));
+        })
+        .catch(() => {
+          figure.classList.add("is-error");
+          figure.classList.remove("is-loading");
+          image.alt = "图片加载失败";
+        });
+    }
+  }
 
   if (copyText) {
     const actions = document.createElement("div");
@@ -713,6 +870,19 @@ function setBusy(tool, busy) {
   const button = form.querySelector(".send-button");
   form.classList.toggle("is-busy", busy);
   button.disabled = busy;
+  topbarNewConversation.disabled = busy;
+
+  if (tool === "agent") {
+    agentSessionSelect.disabled = busy || !agentSessionSelect.value;
+    agentNewConversation.disabled = busy;
+  }
+
+  if (tool === activeTool()) {
+    drawerNewConversation.disabled = busy;
+    sessionDrawerList.querySelectorAll("button").forEach((item) => {
+      item.disabled = busy;
+    });
+  }
 }
 
 async function postJson(url, payload, extraHeaders = {}) {
@@ -925,6 +1095,7 @@ async function submitPrompt(event) {
       (text) => appendStreamingText(typing, text),
     );
     saveThreadId("prompt", data.thread_id, data.thread_token);
+    await refreshSessionDrawer();
     typing.remove();
 
     if (data.response_type !== "prompt") {
@@ -1002,7 +1173,7 @@ async function renderGeneratedImage(data, fallbackPrompt = "") {
 
 async function pollImageJob(jobId) {
   // 生图可能耗时 1~2 分钟，长连接会被网关切断，改成短轮询。
-  for (let attempt = 0; attempt < 120; attempt += 1) {
+  for (let attempt = 0; attempt < 240; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 1500));
 
     const response = await fetch(`/api/images/jobs/${jobId}`, {
@@ -1339,11 +1510,17 @@ async function applyImageEditorChanges() {
   }
 
   const context = imageEditorState.context;
+  const target = imageEditorState.target;
+  const container = messageContainer(target);
+  const threadId = state.threadIds[target];
   imageEditorState.busy = true;
   applyImageEdit.disabled = true;
   closeImageEditor.disabled = true;
   cancelImageEdit.disabled = true;
-  setImageEditorStatus("正在提交局部修改任务…");
+  closeImageViewerDialog();
+  imageEditorDialog.close();
+  setBusy(target, true);
+  const typing = appendTyping(container, "IMAGE EDITING");
 
   try {
     const job = await postJson("/api/images/edits/jobs", {
@@ -1353,13 +1530,16 @@ async function applyImageEditorChanges() {
       aspect_ratio: context.aspectRatio || "1:1",
     });
     const data = await pollImageJob(job.job_id);
-    const target = imageEditorState.target;
+    typing.remove();
 
     if (target === "media") {
       await renderGeneratedImage(data, instruction);
       appendMessage(mediaMessages, "assistant", "已按标记区域完成图片修改。", {
         stateLabel: "IMAGE EDITED",
         copyText: instruction,
+        imageUrl: data.image_url,
+        imageObjectUrl: previewObjectUrl,
+        imagePrompt: instruction,
       });
     } else {
       await setAgentImage(data.image_url, instruction);
@@ -1369,11 +1549,38 @@ async function applyImageEditorChanges() {
       appendMessage(agentMessages, "assistant", "已按标记区域完成图片修改。", {
         stateLabel: "IMAGE EDITED",
         copyText: instruction,
+        imageUrl: data.image_url,
+        imageObjectUrl: agentImageObjectUrl,
+        imagePrompt: instruction,
       });
     }
 
-    imageEditorDialog.close();
+    if (threadId) {
+      try {
+        await postJson(
+          `/api/history/${encodeURIComponent(threadId)}/image-result`,
+          {
+            content: instruction,
+            image_id: data.image_id,
+            image_url: data.image_url,
+            prompt: instruction,
+          },
+        );
+      } catch {
+        appendMessage(
+          container,
+          "error",
+          "图片已修改，但会话历史保存失败，请下载结果后重新发送。",
+        );
+      }
+    }
   } catch (error) {
+    typing.remove();
+    appendMessage(
+      container,
+      "error",
+      error instanceof Error ? error.message : "局部修改失败，请稍后重试。",
+    );
     setImageEditorStatus(
       error instanceof Error ? error.message : "局部修改失败，请稍后重试。",
       true,
@@ -1383,6 +1590,7 @@ async function applyImageEditorChanges() {
     closeImageEditor.disabled = false;
     cancelImageEdit.disabled = false;
     updateImageEditorAvailability();
+    setBusy(target, false);
   }
 }
 
@@ -1431,6 +1639,9 @@ async function generateFromPrompt(prompt) {
       {
         stateLabel: data.image_cached ? "IMAGE CACHED" : "GENERATED",
         copyText: data.prompt || prompt,
+        imageUrl: data.image_url,
+        imageObjectUrl: previewObjectUrl,
+        imagePrompt: data.prompt || prompt,
       },
     );
   } catch (error) {
@@ -1487,6 +1698,9 @@ async function renderImageInBackground(prompt) {
       {
         stateLabel: rendered.image_cached ? "IMAGE CACHED" : "GENERATED",
         copyText: prompt,
+        imageUrl: rendered.image_url,
+        imageObjectUrl: previewObjectUrl,
+        imagePrompt: prompt,
       },
     );
   } catch (error) {
@@ -1541,6 +1755,7 @@ async function submitMedia(event) {
       threadHeaders("media"),
     );
     saveThreadId("media", data.thread_id, data.thread_token);
+    await refreshSessionDrawer();
 
     typing.remove();
 
@@ -1614,6 +1829,9 @@ async function submitMedia(event) {
             ? "PROMPT CACHED"
             : "LIVE",
         copyText: data.prompt,
+        imageUrl: hasImage ? data.image_url : "",
+        imageObjectUrl: hasImage ? previewObjectUrl : "",
+        imagePrompt: data.prompt,
         sources: data.sources || [],
       },
     );
@@ -1898,7 +2116,7 @@ function handleAgentStreamEvent(event) {
 
 async function streamAgent(message, threadId, onEvent) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 180000);
+  const timeout = setTimeout(() => controller.abort(), 360000);
 
   const send = () =>
     fetch("/api/agent/stream", {
@@ -2030,6 +2248,8 @@ async function submitAgent(event) {
       },
     );
     saveThreadId("agent", data.thread_id);
+    await refreshAgentSessionSelector();
+    await refreshSessionDrawer();
     typing.remove();
     renderAgentTrace(data);
     agentResult.hidden = false;
@@ -2048,6 +2268,9 @@ async function submitAgent(event) {
         {
           stateLabel: "IMAGE",
           copyText: data.prompt || "",
+          imageUrl: data.image_url,
+          imageObjectUrl: agentImageObjectUrl,
+          imagePrompt: data.prompt || data.reply || "",
         },
       );
       return;
@@ -2188,6 +2411,218 @@ function formatHistoryTime(value) {
     : "";
 }
 
+function isCompactSessionLayout() {
+  return window.matchMedia("(max-width: 860px)").matches;
+}
+
+function renderSessionDrawerList() {
+  const query = sessionDrawerSearch.value.trim().toLowerCase();
+  const activeThread = state.threadIds[state.tool];
+  const items = state.sessionDrawerItems.filter((item) => {
+    const title = String(item.title || "未命名会话");
+    return !query || title.toLowerCase().includes(query);
+  });
+
+  sessionDrawerList.replaceChildren();
+  sessionDrawerTitle.textContent = sessionDrawerTitles[state.tool]
+    || "会话";
+  drawerNewConversation.disabled = state.busy[state.tool];
+
+  if (!items.length) {
+    const empty = document.createElement("p");
+    empty.className = "session-drawer-empty";
+    empty.textContent = query
+      ? "没有匹配的会话。"
+      : "还没有历史会话，先发起一次对话。";
+    sessionDrawerList.appendChild(empty);
+    return;
+  }
+
+  items.forEach((item) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "session-drawer-item";
+    button.dataset.threadId = item.thread_id;
+    button.classList.toggle(
+      "is-active",
+      item.thread_id === activeThread,
+    );
+
+    const title = document.createElement("strong");
+    title.textContent = item.title || "未命名会话";
+
+    const meta = document.createElement("span");
+    meta.textContent = [
+      `${item.message_count || 0} 条`,
+      formatHistoryTime(item.updated_at),
+    ].filter(Boolean).join(" · ");
+
+    button.append(title, meta);
+    button.addEventListener("click", async () => {
+      if (state.busy[state.tool]) {
+        return;
+      }
+
+      await loadConversationHistory(state.tool, item.thread_id);
+
+      if (isCompactSessionLayout()) {
+        setSessionDrawerOpen(false);
+      }
+    });
+    sessionDrawerList.appendChild(button);
+  });
+}
+
+async function refreshSessionDrawer() {
+  const tool = activeTool();
+  const requestId = state.sessionDrawerRequest + 1;
+  state.sessionDrawerRequest = requestId;
+
+  try {
+    const data = await getJson(`/api/conversations?tool=${tool}`);
+
+    if (
+      requestId !== state.sessionDrawerRequest
+      || tool !== activeTool()
+    ) {
+      return;
+    }
+
+    state.sessionDrawerItems = data.items || [];
+  } catch (error) {
+    if (requestId !== state.sessionDrawerRequest) {
+      return;
+    }
+
+    state.sessionDrawerItems = [];
+    console.error("加载会话抽屉失败", error);
+  }
+
+  renderSessionDrawerList();
+}
+
+function setSessionDrawerOpen(open) {
+  state.sessionDrawerOpen = open;
+  appShell.classList.toggle("is-session-drawer-open", open);
+  historyButton.setAttribute("aria-expanded", String(open));
+
+  try {
+    localStorage.setItem(
+      "prompt-atelier-session-drawer",
+      open ? "open" : "closed",
+    );
+  } catch {
+    // Drawer state remains in memory when storage is unavailable.
+  }
+
+  if (open) {
+    refreshSessionDrawer();
+  }
+}
+
+function restoreSessionDrawerState() {
+  try {
+    const stored = localStorage.getItem("prompt-atelier-session-drawer");
+    setSessionDrawerOpen(stored === "open");
+  } catch {
+    setSessionDrawerOpen(false);
+  }
+}
+
+async function refreshAgentSessionSelector() {
+  if (!agentSessionSelect) {
+    return;
+  }
+
+  try {
+    const data = await getJson("/api/conversations?tool=agent");
+    const items = data.items || [];
+    const current = state.threadIds.agent;
+    agentSessionSelect.replaceChildren();
+
+    if (!items.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "暂无历史会话";
+      option.selected = true;
+      agentSessionSelect.appendChild(option);
+      agentSessionSelect.disabled = true;
+      agentNewConversation.disabled = state.busy.agent;
+      return;
+    }
+
+    items.forEach((item) => {
+      const option = document.createElement("option");
+      option.value = item.thread_id;
+      option.textContent = [
+        item.title || "未命名会话",
+        formatHistoryTime(item.updated_at),
+      ].filter(Boolean).join(" · ");
+      agentSessionSelect.appendChild(option);
+    });
+
+    if (
+      current
+      && !items.some((item) => item.thread_id === current)
+    ) {
+      const option = document.createElement("option");
+      option.value = current;
+      option.textContent = "当前会话";
+      agentSessionSelect.appendChild(option);
+    }
+
+    agentSessionSelect.disabled = state.busy.agent;
+    agentNewConversation.disabled = state.busy.agent;
+    agentSessionSelect.value = current || items[0].thread_id;
+  } catch (error) {
+    console.error("加载 Agent 会话列表失败", error);
+  }
+}
+
+function resetAgentRunVisuals() {
+  setAgentLiveState(
+    "等待任务",
+    "提交目标后，这里会实时显示 Agent 正在做什么。",
+    "idle",
+  );
+  agentTraceSteps.textContent = "0 STEPS";
+  renderAgentTraceList(agentDecisions, []);
+  renderAgentTraceList(agentTools, []);
+  agentResult.hidden = true;
+  agentResultText.textContent = "";
+  clearAgentImage();
+  agentPendingToolRow = null;
+}
+
+async function createAgentConversation() {
+  if (state.busy.agent) {
+    return;
+  }
+
+  try {
+    const data = await postJson("/api/conversations", { tool: "agent" });
+    saveThreadId("agent", data.thread_id);
+    agentMessages.replaceChildren();
+    resetAgentRunVisuals();
+    appendMessage(agentMessages, "assistant", "新会话已开始。", {
+      stateLabel: "NEW",
+    });
+    await refreshSessionDrawer();
+
+    if (tool === "agent") {
+      await refreshAgentSessionSelector();
+    }
+    await refreshAgentSessionSelector();
+    agentInput.focus();
+  } catch (error) {
+    appendMessage(
+      agentMessages,
+      "error",
+      error instanceof Error ? error.message : "新建 Agent 会话失败。",
+    );
+  }
+}
+
 async function refreshConversationList() {
   const tool = activeTool();
   const data = await getJson(`/api/conversations?tool=${tool}`);
@@ -2244,12 +2679,23 @@ async function startNewConversation() {
 
   try {
     const data = await postJson("/api/conversations", { tool });
-    state.threadIds[tool] = data.thread_id;
+    saveThreadId(tool, data.thread_id);
     container.replaceChildren();
-    historyDialog.close();
+    if (historyDialog.open) {
+      historyDialog.close();
+    }
+
+    if (tool === "agent") {
+      resetAgentRunVisuals();
+    }
     appendMessage(container, "assistant", "新对话已开始。", {
       stateLabel: "NEW",
     });
+    await refreshSessionDrawer();
+
+    if (tool === "agent") {
+      await refreshAgentSessionSelector();
+    }
   } catch (error) {
     appendMessage(
       container,
@@ -2299,10 +2745,8 @@ async function restoreSession() {
     sessionDialog.close();
     promptMessages.replaceChildren();
     mediaMessages.replaceChildren();
-    state.threadIds.prompt = "";
-    state.threadIds.media = "";
     agentMessages.replaceChildren();
-    state.threadIds.agent = "";
+    clearThreadPointers();
     await bootstrapSession();
     appendMessage(promptMessages, "assistant", "会话已恢复。", {
       stateLabel: "RESTORED",
@@ -2319,9 +2763,7 @@ async function resetSession() {
     promptMessages.replaceChildren();
     mediaMessages.replaceChildren();
     agentMessages.replaceChildren();
-    state.threadIds.prompt = "";
-    state.threadIds.media = "";
-    state.threadIds.agent = "";
+    clearThreadPointers();
     await bootstrapSession();
     appendMessage(promptMessages, "assistant", "已切换到新会话。", {
       stateLabel: "NEW SESSION",
@@ -2332,6 +2774,8 @@ async function resetSession() {
 }
 
 async function bootstrapSession() {
+  restoreThreadPointers();
+
   try {
     // 服务端会下发 HttpOnly cookie，之后所有请求自动带上
     await getJson("/api/session");
@@ -2342,12 +2786,23 @@ async function bootstrapSession() {
   await loadConversationHistory("prompt");
   await loadConversationHistory("media");
   await loadConversationHistory("agent");
+  await refreshSessionDrawer();
 }
 
 function initializeHistoryDialog() {
   historyButton.addEventListener("click", () => {
-    openHistoryDialog();
+    setSessionDrawerOpen(!state.sessionDrawerOpen);
   });
+  closeSessionDrawer.addEventListener("click", () => {
+    setSessionDrawerOpen(false);
+  });
+  drawerNewConversation.addEventListener("click", () => {
+    startNewConversation();
+  });
+  topbarNewConversation.addEventListener("click", () => {
+    startNewConversation();
+  });
+  sessionDrawerSearch.addEventListener("input", renderSessionDrawerList);
   closeHistoryDialog.addEventListener("click", () => {
     historyDialog.close();
   });
@@ -2380,31 +2835,95 @@ function initializeSessionDialog() {
   });
 }
 
-async function loadConversationHistory(tool, threadId) {
+function resetConversationWorkspace(tool) {
+  if (tool === "agent") {
+    resetAgentRunVisuals();
+  }
+
+  if (tool === "media") {
+    previewEmpty.hidden = false;
+    previewResult.hidden = true;
+    previewResult.classList.remove("has-image");
+    previewImageWrap.hidden = true;
+    clearPreviewImage();
+    previewPrompt.textContent = "";
+    previewType.textContent = "IMAGE PROMPT";
+    previewStatus.textContent = "READY";
+    providerNote.textContent = "GENERATION PROVIDER · READY";
+    mediaInput.value = "";
+    resizeTextarea(mediaInput);
+  }
+}
+
+async function loadConversationHistory(
+  tool,
+  threadId,
+  allowFallback = true,
+) {
   const container = messageContainer(tool);
+  const requestId = state.conversationLoadRequests[tool] + 1;
+  state.conversationLoadRequests[tool] = requestId;
+  let target = threadId || state.threadIds[tool];
+  container.replaceChildren();
+  resetConversationWorkspace(tool);
+  const loading = appendTyping(container, "LOADING SESSION");
+
+  const isCurrentRequest = () => (
+    requestId === state.conversationLoadRequests[tool]
+  );
 
   try {
-    let target = threadId;
-
     if (!target) {
       const list = await getJson(`/api/conversations?tool=${tool}`);
+
+      if (!isCurrentRequest()) {
+        return;
+      }
+
       const latest = (list.items || [])[0];
 
       if (!latest) {
+        loading.remove();
         return;
       }
 
       target = latest.thread_id;
     }
 
+    saveThreadId(tool, target);
+
+    if (tool === activeTool()) {
+      renderSessionDrawerList();
+    }
+
     const data = await getJson(
       `/api/history/${encodeURIComponent(target)}?limit=500`,
     );
+
+    if (!isCurrentRequest()) {
+      return;
+    }
+
     const messages = data.messages || [];
 
-    state.threadIds[tool] = target;
+    if (tool === "agent") {
+      await refreshAgentSessionSelector();
+
+      if (!isCurrentRequest()) {
+        return;
+      }
+    }
+
+    if (tool === activeTool()) {
+      await refreshSessionDrawer();
+
+      if (!isCurrentRequest()) {
+        return;
+      }
+    }
 
     if (!messages.length && !data.summary) {
+      loading.remove();
       return;
     }
 
@@ -2422,20 +2941,52 @@ async function loadConversationHistory(tool, threadId) {
     }
 
     messages.forEach((message) => {
+      const metadata = message.metadata || {};
+      const hasImage = Boolean(
+        metadata.response_type === "image" && metadata.image_url,
+      );
       appendMessage(
         container,
         message.role,
         message.content,
         {
-          stateLabel: message.role === "assistant" ? "HISTORY" : "",
-          copyText: message.role === "assistant"
-            ? message.content
+          stateLabel: message.role === "assistant"
+            ? hasImage
+              ? "IMAGE"
+              : "HISTORY"
             : "",
+          copyText: message.role === "assistant"
+            ? metadata.prompt || message.content
+            : "",
+          imageUrl: hasImage ? metadata.image_url : "",
+          imagePrompt: hasImage
+            ? metadata.prompt || message.content
+            : "",
+          sources: metadata.sources || [],
         },
       );
     });
-  } catch {
-    // Keep the in-memory conversation when history cannot be loaded.
+  } catch (error) {
+    if (!isCurrentRequest()) {
+      return;
+    }
+
+    console.error("加载会话历史失败", error);
+
+    if (allowFallback && target) {
+      dropStaleThread(tool);
+      await loadConversationHistory(tool, "", false);
+      return;
+    }
+
+    loading.remove();
+    appendMessage(
+      messageContainer(tool),
+      "error",
+      "会话加载失败，请重新选择会话。",
+    );
+  } finally {
+    loading.remove();
   }
 }
 
@@ -2483,6 +3034,17 @@ toolButtons.forEach((button) => {
 promptForm.addEventListener("submit", submitPrompt);
 mediaForm.addEventListener("submit", submitMedia);
 agentForm.addEventListener("submit", submitAgent);
+agentSessionSelect.addEventListener("change", async () => {
+  const threadId = agentSessionSelect.value;
+
+  if (!threadId || state.busy.agent) {
+    return;
+  }
+
+  await loadConversationHistory("agent", threadId);
+  agentInput.focus();
+});
+agentNewConversation.addEventListener("click", createAgentConversation);
 
 downloadPreviewImage.addEventListener("click", () => {
   downloadImageTarget("media").catch((error) => {
@@ -2506,6 +3068,21 @@ copyAgentPrompt.addEventListener("click", () => {
 });
 editPreviewImage.addEventListener("click", () => openImageEditor("media"));
 editAgentImage.addEventListener("click", () => openImageEditor("agent"));
+
+bindImageViewer(previewImage, "media");
+bindImageViewer(agentResultImage, "agent");
+closeImageViewer.addEventListener("click", closeImageViewerDialog);
+imageViewerImage.addEventListener("click", closeImageViewerDialog);
+imageViewerDialog.addEventListener("click", (event) => {
+  if (event.target === imageViewerDialog) {
+    closeImageViewerDialog();
+  }
+});
+imageViewerDialog.addEventListener("close", () => {
+  imageViewerImage.removeAttribute("src");
+  imageViewerImage.alt = "";
+  imageViewerCaption.textContent = "";
+});
 
 editorTools.forEach((button) => {
   button.addEventListener("click", () => {
@@ -2562,6 +3139,7 @@ initializeMediaTabs();
 initializePromptDialog();
 initializeThreadDeletion();
 initializeHistoryDialog();
+restoreSessionDrawerState();
 initializeSessionDialog();
 initializeHealth();
 bootstrapSession();

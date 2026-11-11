@@ -64,6 +64,7 @@ class BrokenWriteRepo(ConversationRepository):
         thread_id: str,
         role: str,
         content: str,
+        metadata: dict[str, Any] | None = None,
     ) -> int:
         raise sqlite3.OperationalError("database is locked")
 

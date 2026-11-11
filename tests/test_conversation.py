@@ -195,6 +195,27 @@ def test_repository_lists_full_history_in_order(
     assert messages[-1].content == "assistant-5"
 
 
+def test_message_metadata_round_trips(tmp_path: Path) -> None:
+    db_path = tmp_path / "prompt_index.sqlite3"
+    initialize_database(db_path)
+    repo = ConversationRepository(db_path)
+    metadata = {
+        "response_type": "image",
+        "image_url": "/api/images/result.png",
+        "prompt": "a snowy cat",
+    }
+
+    repo.append_message(
+        "thread-image",
+        "assistant",
+        "image result",
+        metadata=metadata,
+    )
+    messages = repo.list_messages("thread-image")
+
+    assert messages[0].metadata == metadata
+
+
 def test_vague_feedback_returns_clarification_without_generation(
     tmp_path: Path,
 ) -> None:

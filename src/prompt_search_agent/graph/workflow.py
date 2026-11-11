@@ -1,5 +1,7 @@
 """LangGraph workflow assembly."""
 
+import logging
+
 from langgraph.constants import END, START
 from langgraph.graph import StateGraph
 
@@ -25,6 +27,7 @@ from prompt_search_agent.llm import create_chat_model
 from prompt_search_agent.search.sqlite import SqlitePromptSearchBackend
 
 WEB_RESEARCH_MODES = ("on_demand", "always", "never")
+LOGGER = logging.getLogger(__name__)
 
 # 只有用户明确要"查资料"时才走联网。默认不查，因为联网是 20s 级别的慢路径。
 WEB_TRIGGERS = (
@@ -116,7 +119,9 @@ def build_workflow(
 
 def route_after_parse(state: AgentState) -> str:
     if state.get("request") is None:
+        LOGGER.info("prompt.route from=parse_request to=end reason=no_request")
         return END
+    LOGGER.info("prompt.route from=parse_request to=search_prompt")
     return "search_prompt"
 
 
@@ -138,22 +143,47 @@ def route_after_rerank(
         )
 
         if asked:
+            LOGGER.info(
+                "prompt.route from=rerank_prompts to=web_research mode=%s",
+                web_mode,
+            )
             return "web_research"
 
     if state.get("reranked_candidates"):
+        LOGGER.info(
+            "prompt.route from=rerank_prompts to=compose_prompt "
+            "candidates=%s",
+            len(state.get("reranked_candidates") or []),
+        )
         return "compose_prompt"
 
+    LOGGER.info(
+        "prompt.route from=rerank_prompts to=generate_from_brief "
+        "reason=no_reranked_candidates",
+    )
     return "generate_from_brief"
 
 
 def route_after_web_research(state: AgentState) -> str:
     # 联网拿到材料就组装；没拿到但本地有候选也照样组装，别浪费已有召回。
     if state.get("web_context"):
+        LOGGER.info(
+            "prompt.route from=web_research to=compose_prompt "
+            "reason=web_context",
+        )
         return "compose_prompt"
 
     if state.get("reranked_candidates") or state.get("candidates"):
+        LOGGER.info(
+            "prompt.route from=web_research to=compose_prompt "
+            "reason=local_candidates",
+        )
         return "compose_prompt"
 
+    LOGGER.info(
+        "prompt.route from=web_research to=generate_from_brief "
+        "reason=no_sources",
+    )
     return "generate_from_brief"
 
 

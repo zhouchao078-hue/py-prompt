@@ -3,8 +3,10 @@
 import base64
 import binascii
 import ipaddress
+import logging
 import mimetypes
 import socket
+import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -17,7 +19,8 @@ from urllib.request import (
 )
 from uuid import uuid4
 
-from openai import OpenAI, OpenAIError
+import httpx2
+from openai import APITimeoutError, OpenAI, OpenAIError
 
 from prompt_search_agent.images.base import (
     ImageEditRequest,
@@ -25,11 +28,74 @@ from prompt_search_agent.images.base import (
     ImageGenerationRequest,
     ImageGenerationResult,
 )
+from prompt_search_agent.log_utils import log_value
 
 DownloadedImage = tuple[bytes, str | None]
 ImageDownloader = Callable[[str], DownloadedImage]
 
 ALLOWED_SCHEMES = frozenset({"http", "https"})
+LOGGER = logging.getLogger(__name__)
+IMAGE_ENDPOINT_SUFFIXES = (
+    "/images/generations",
+    "/images/edits",
+)
+IMAGE_CONNECT_ATTEMPTS = 3
+
+
+def _normalize_api_base(api_base: str) -> str:
+    """Accept either an API root or a complete image endpoint URL."""
+    normalized = api_base.rstrip("/")
+
+    for suffix in IMAGE_ENDPOINT_SUFFIXES:
+        if normalized.endswith(suffix):
+            return normalized[: -len(suffix)]
+
+    return normalized
+
+
+def _call_with_connect_retry(operation: Callable[[], Any]) -> Any:
+    """Retry only TLS/connect failures; read timeouts may already cost a generation."""
+    for attempt in range(IMAGE_CONNECT_ATTEMPTS):
+        try:
+            return operation()
+        except APITimeoutError as exc:
+            cause = type(exc.__cause__).__name__
+            connect_timeout = isinstance(
+                exc.__cause__,
+                httpx2.ConnectTimeout,
+            )
+
+            if (
+                connect_timeout
+                and attempt < IMAGE_CONNECT_ATTEMPTS - 1
+            ):
+                LOGGER.warning(
+                    "image.api.retry reason=connect_timeout "
+                    "request_sent=false attempt=%s/%s cause=%s message=%s",
+                    attempt + 1,
+                    IMAGE_CONNECT_ATTEMPTS,
+                    cause,
+                    log_value(str(exc)),
+                )
+                time.sleep(0.8 * (attempt + 1))
+                continue
+
+            LOGGER.warning(
+                "image.api.timeout retry=false reason=%s "
+                "request_sent=%s error_type=%s cause=%s message=%s",
+                (
+                    "connect_exhausted"
+                    if connect_timeout
+                    else "response_timeout"
+                ),
+                "false" if connect_timeout else "unknown",
+                type(exc).__name__,
+                cause,
+                log_value(str(exc)),
+            )
+            raise
+
+    raise RuntimeError("Unreachable image request retry state")
 
 
 def _is_public_host(host: str) -> bool:
@@ -196,6 +262,7 @@ class OpenAIImageProvider:
         model: str,
         output_dir: Path,
         timeout_seconds: float = 120.0,
+        connect_timeout_seconds: float = 20.0,
         max_download_bytes: int = 25_000_000,
         response_format: str | None = None,
         output_format: str | None = None,
@@ -208,10 +275,21 @@ class OpenAIImageProvider:
         self.max_download_bytes = max_download_bytes
         self.response_format = response_format
         self.output_format = output_format
+        normalized_api_base = _normalize_api_base(api_base)
+        self.generation_url = (
+            f"{normalized_api_base}/images/generations"
+        )
+        self.edit_url = f"{normalized_api_base}/images/edits"
         self.client = client or OpenAI(
             api_key=api_key,
-            base_url=api_base.rstrip("/"),
-            timeout=timeout_seconds,
+            base_url=normalized_api_base,
+            timeout=httpx2.Timeout(
+                timeout_seconds,
+                connect=min(connect_timeout_seconds, timeout_seconds),
+                read=timeout_seconds,
+                write=min(60.0, timeout_seconds),
+                pool=min(30.0, timeout_seconds),
+            ),
             max_retries=0,
         )
         self.downloader = downloader or (
@@ -226,6 +304,18 @@ class OpenAIImageProvider:
         self,
         request: ImageGenerationRequest,
     ) -> ImageGenerationResult:
+        started = time.perf_counter()
+        LOGGER.info(
+            "image.generate.request endpoint=%s model=%s "
+            "size=%s response_format=%s output_format=%s prompt=%s",
+            self.generation_url,
+            self.model,
+            request.size,
+            self.response_format or "default",
+            self.output_format or "default",
+            log_value(request.prompt),
+        )
+
         request_options: dict[str, Any] = {
             "model": self.model,
             "prompt": request.prompt,
@@ -240,38 +330,102 @@ class OpenAIImageProvider:
             request_options["output_format"] = self.output_format
 
         try:
-            response = self.client.images.generate(**request_options)
+            response = _call_with_connect_retry(
+                lambda: self.client.images.generate(**request_options)
+            )
         except OpenAIError as exc:
+            LOGGER.error(
+                "image.generate.error endpoint=%s model=%s "
+                "size=%s elapsed_ms=%s error_type=%s message=%s",
+                self.generation_url,
+                self.model,
+                request.size,
+                int((time.perf_counter() - started) * 1000),
+                type(exc).__name__,
+                log_value(str(exc)),
+            )
             raise ImageGenerationError(
                 f"Image API request failed: {exc}"
             ) from exc
 
-        return self._store_response(response, request.prompt, request.size)
+        result = self._store_response(
+            response,
+            request.prompt,
+            request.size,
+            operation="generate",
+        )
+        LOGGER.info(
+            "image.generate.complete endpoint=%s model=%s "
+            "size=%s elapsed_ms=%s image_id=%s file=%s cached=%s",
+            self.generation_url,
+            self.model,
+            request.size,
+            int((time.perf_counter() - started) * 1000),
+            result.image_id,
+            result.file_path,
+            result.cached,
+        )
+        return result
 
     def edit(
         self,
         request: ImageEditRequest,
     ) -> ImageGenerationResult:
+        started = time.perf_counter()
+        LOGGER.info(
+            "image.edit.request endpoint=%s model=%s size=%s "
+            "response_format=%s output_format=%s source=%s mask_bytes=%s "
+            "prompt=%s",
+            self.edit_url,
+            self.model,
+            request.size,
+            self.response_format or "default",
+            self.output_format or "default",
+            request.image_path,
+            len(request.mask_bytes),
+            log_value(request.prompt),
+        )
         try:
             image_content = request.image_path.read_bytes()
         except OSError as exc:
+            LOGGER.error(
+                "image.edit.source_error source=%s error_type=%s message=%s",
+                request.image_path,
+                type(exc).__name__,
+                log_value(str(exc)),
+            )
             raise ImageGenerationError(
                 "Failed to read the source image"
             ) from exc
 
         if not image_content:
+            LOGGER.error("image.edit.invalid_source reason=empty")
             raise ImageGenerationError("Source image is empty")
         if len(image_content) > self.max_download_bytes:
+            LOGGER.error(
+                "image.edit.invalid_source reason=source_too_large bytes=%s "
+                "max_bytes=%s",
+                len(image_content),
+                self.max_download_bytes,
+            )
             raise ImageGenerationError("Source image exceeds the size limit")
         if not request.mask_bytes:
+            LOGGER.error("image.edit.invalid_mask reason=empty")
             raise ImageGenerationError("Edit mask is empty")
         if len(request.mask_bytes) > self.max_download_bytes:
+            LOGGER.error(
+                "image.edit.invalid_mask reason=mask_too_large bytes=%s "
+                "max_bytes=%s",
+                len(request.mask_bytes),
+                self.max_download_bytes,
+            )
             raise ImageGenerationError("Edit mask exceeds the size limit")
 
         image_content_type = (
             mimetypes.guess_type(request.image_path.name)[0]
             or "application/octet-stream"
         )
+
         request_options: dict[str, Any] = {
             "model": self.model,
             "image": (
@@ -296,22 +450,58 @@ class OpenAIImageProvider:
             request_options["output_format"] = self.output_format
 
         try:
-            response = self.client.images.edit(**request_options)
+            response = _call_with_connect_retry(
+                lambda: self.client.images.edit(**request_options)
+            )
         except OpenAIError as exc:
+            LOGGER.error(
+                "image.edit.error endpoint=%s model=%s size=%s "
+                "elapsed_ms=%s error_type=%s message=%s",
+                self.edit_url,
+                self.model,
+                request.size,
+                int((time.perf_counter() - started) * 1000),
+                type(exc).__name__,
+                log_value(str(exc)),
+            )
             raise ImageGenerationError(
                 f"Image edit API request failed: {exc}"
             ) from exc
 
-        return self._store_response(response, request.prompt, request.size)
+        result = self._store_response(
+            response,
+            request.prompt,
+            request.size,
+            operation="edit",
+        )
+        LOGGER.info(
+            "image.edit.complete endpoint=%s model=%s size=%s "
+            "elapsed_ms=%s image_id=%s file=%s cached=%s",
+            self.edit_url,
+            self.model,
+            request.size,
+            int((time.perf_counter() - started) * 1000),
+            result.image_id,
+            result.file_path,
+            result.cached,
+        )
+        return result
 
     def _store_response(
         self,
         response: Any,
         prompt: str,
         size: str,
+        operation: str,
     ) -> ImageGenerationResult:
         items = _normalize_response_items(response)
         if not items:
+            LOGGER.error(
+                "image.response.invalid operation=%s reason=no_items "
+                "response=%s",
+                operation,
+                log_value(response),
+            )
             raise ImageGenerationError(
                 "Image API returned no image data"
             )
@@ -320,18 +510,52 @@ class OpenAIImageProvider:
         encoded_image = _read_value(item, "b64_json")
         image_url = _read_value(item, "url")
         revised_prompt = _read_value(item, "revised_prompt")
+        item_keys = (
+            sorted(str(key) for key in item)
+            if isinstance(item, Mapping)
+            else "-"
+        )
+        LOGGER.info(
+            "image.response.received operation=%s items=%s item_keys=%s "
+            "b64_chars=%s url_present=%s revised_prompt=%s",
+            operation,
+            len(items),
+            log_value(item_keys),
+            len(encoded_image) if isinstance(encoded_image, str) else 0,
+            bool(image_url),
+            log_value(revised_prompt),
+        )
 
         content, content_type = self._load_image(
             encoded_image=encoded_image,
             image_url=image_url,
         )
+        LOGGER.info(
+            "image.response.loaded operation=%s bytes=%s content_type=%s "
+            "revised_prompt=%s",
+            operation,
+            len(content),
+            content_type or "-",
+            log_value(revised_prompt),
+        )
 
         if not content:
+            LOGGER.error(
+                "image.response.invalid operation=%s reason=empty_content",
+                operation,
+            )
             raise ImageGenerationError(
                 "Image API returned empty image data"
             )
 
         if len(content) > self.max_download_bytes:
+            LOGGER.error(
+                "image.response.invalid operation=%s reason=too_large "
+                "bytes=%s max_bytes=%s",
+                operation,
+                len(content),
+                self.max_download_bytes,
+            )
             raise ImageGenerationError(
                 "Generated image exceeds the configured size limit"
             )
@@ -340,6 +564,12 @@ class OpenAIImageProvider:
         image_id = uuid4().hex
         file_name = f"{image_id}{extension}"
         file_path = self.output_dir / file_name
+        LOGGER.info(
+            "image.file.save.start operation=%s path=%s bytes=%s",
+            operation,
+            file_path,
+            len(content),
+        )
 
         try:
             self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -349,9 +579,20 @@ class OpenAIImageProvider:
             temporary_path.write_bytes(content)
             temporary_path.replace(file_path)
         except OSError as exc:
+            LOGGER.exception(
+                "image.file.save.error operation=%s path=%s",
+                operation,
+                file_path,
+            )
             raise ImageGenerationError(
                 "Failed to save the generated image"
             ) from exc
+        LOGGER.info(
+            "image.file.save.complete operation=%s path=%s bytes=%s",
+            operation,
+            file_path,
+            len(content),
+        )
 
         return ImageGenerationResult(
             image_id=image_id,
@@ -386,13 +627,27 @@ class OpenAIImageProvider:
                     self.max_download_bytes,
                 )
 
+            parsed_url = urlparse(image_url)
+            LOGGER.info(
+                "image.response.download.start scheme=%s host=%s",
+                parsed_url.scheme,
+                parsed_url.hostname or "-",
+            )
             try:
                 return self.downloader(image_url)
             except (OSError, URLError, ValueError) as exc:
+                LOGGER.error(
+                    "image.response.download.error error_type=%s message=%s",
+                    type(exc).__name__,
+                    log_value(str(exc)),
+                )
                 raise ImageGenerationError(
                     "Failed to download the generated image"
                 ) from exc
 
+        LOGGER.error(
+            "image.response.invalid reason=missing_b64_or_url"
+        )
         raise ImageGenerationError(
             "Image API response must include "
             "data[0].b64_json or data[0].url"

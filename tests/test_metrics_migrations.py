@@ -108,6 +108,24 @@ def test_migration_adds_missing_sources_json(tmp_path: Path) -> None:
     assert read_schema_version(db_path) == LATEST_VERSION
 
 
+def test_schema_has_conversation_message_metadata(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "schema.sqlite3"
+    initialize_database(db_path)
+
+    connection = sqlite3.connect(db_path)
+    columns = {
+        row[1]
+        for row in connection.execute(
+            "PRAGMA table_info(conversation_messages)"
+        )
+    }
+    connection.close()
+
+    assert "metadata_json" in columns
+
+
 def test_version_reports_schema_version(tmp_path: Path) -> None:
     settings = Settings(
         deepseek_api_key=SecretStr("test-key"),

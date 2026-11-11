@@ -2,18 +2,50 @@
 
 from typing import Any, Literal, NotRequired, TypedDict
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from prompt_search_agent.models import WebSource
 
 
 class AgentDecision(BaseModel):
     action: Literal["call_tool", "ask_user", "finish"]
-    tool_name: str | None = None
+    tool_name: str | None = Field(default=None, max_length=100)
     tool_input: dict[str, Any] = Field(default_factory=dict)
-    question: str | None = None
-    final_response: str | None = None
-    reason_summary: str
+    question: str | None = Field(default=None, max_length=2000)
+    final_response: str | None = Field(default=None, max_length=12000)
+    reason_summary: str = Field(min_length=1, max_length=500)
+
+    @field_validator("tool_name", "question", "final_response")
+    @classmethod
+    def strip_text_fields(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+
+        stripped = value.strip()
+        return stripped or None
+
+    @field_validator("reason_summary")
+    @classmethod
+    def strip_reason_summary(cls, value: str) -> str:
+        stripped = value.strip()
+
+        if not stripped:
+            raise ValueError("reason_summary must not be blank")
+
+        return stripped
+
+    @model_validator(mode="after")
+    def validate_action_fields(self) -> "AgentDecision":
+        if self.action == "call_tool" and self.tool_name is None:
+            raise ValueError("call_tool requires tool_name")
+
+        if self.action == "ask_user" and self.question is None:
+            raise ValueError("ask_user requires question")
+
+        if self.action == "finish" and self.tool_name is not None:
+            raise ValueError("finish must not include tool_name")
+
+        return self
 
 
 class AgentToolObservation(BaseModel):

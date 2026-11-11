@@ -206,6 +206,8 @@ class SessionRepository:
                 ).fetchone()
 
             if row is not None:
+                if title:
+                    self.touch_conversation(requested, title)
                 return str(row["thread_id"])
 
         latest = self.latest_thread(session_id, tool)

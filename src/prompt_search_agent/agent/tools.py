@@ -10,6 +10,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, ValidationError
 
 from prompt_search_agent.graph.state import NO_MATCHING_PROMPT
+from prompt_search_agent.images import ImageGenerationError
+from prompt_search_agent.log_utils import log_value
 from prompt_search_agent.models import WebSource
 from prompt_search_agent.storage import add_prompt_text
 
@@ -67,11 +69,45 @@ class AddPromptInput(BaseModel):
     category: str | None = Field(default=None, max_length=100)
 
 
+class GeneratePromptOutput(BaseModel):
+    final_prompt: str = Field(min_length=1, max_length=12000)
+    sources: list[WebSource] = Field(default_factory=list)
+
+
+class RewritePromptOutput(BaseModel):
+    final_prompt: str = Field(min_length=1, max_length=12000)
+
+
+class GenerateImageOutput(BaseModel):
+    image_id: str = Field(min_length=1, max_length=100)
+    image_url: str = Field(
+        pattern=r"^/api/images/[A-Za-z0-9._-]+$",
+    )
+    prompt: str = Field(min_length=1, max_length=12000)
+    cached: bool
+
+
+class HistoryMessageOutput(BaseModel):
+    id: int = Field(ge=1)
+    role: str = Field(min_length=1, max_length=32)
+    content: str
+
+
+class ConversationHistoryOutput(BaseModel):
+    messages: list[HistoryMessageOutput] = Field(default_factory=list)
+
+
+class AddPromptOutput(BaseModel):
+    prompt_id: str = Field(min_length=1, max_length=100)
+    inserted: bool
+
+
 @dataclass(frozen=True)
 class AgentToolSpec:
     name: str
     description: str
     input_model: type[BaseModel]
+    output_model: type[BaseModel]
     handler: Callable[[AgentToolContext, Any], dict[str, Any]]
 
 
@@ -95,15 +131,34 @@ class AgentToolRegistry:
         spec = self._specs.get(tool_name)
 
         if spec is None:
+            LOGGER.warning(
+                "agent.tool.not_found tool=%s thread=%s input=%s",
+                tool_name,
+                context.thread_id,
+                log_value(tool_input),
+            )
             return AgentToolResult(
                 ok=False,
                 error_code="TOOL_NOT_FOUND",
                 message=f"未注册工具: {tool_name}",
             )
 
+        LOGGER.info(
+            "agent.tool.start tool=%s thread=%s input=%s",
+            tool_name,
+            context.thread_id,
+            log_value(tool_input),
+        )
+
         try:
             parsed_input = spec.input_model.model_validate(tool_input)
         except ValidationError as exc:
+            LOGGER.warning(
+                "agent.tool.invalid_input tool=%s thread=%s error=%s",
+                tool_name,
+                context.thread_id,
+                log_value(str(exc)),
+            )
             return AgentToolResult(
                 ok=False,
                 error_code="INVALID_TOOL_INPUT",
@@ -114,6 +169,16 @@ class AgentToolRegistry:
         try:
             data = spec.handler(context, parsed_input)
         except AgentToolError as exc:
+            LOGGER.warning(
+                "agent.tool.failed tool=%s thread=%s code=%s retryable=%s "
+                "elapsed_ms=%s message=%s",
+                tool_name,
+                context.thread_id,
+                exc.error_code,
+                exc.retryable,
+                int((time.perf_counter() - started) * 1000),
+                log_value(str(exc)),
+            )
             return AgentToolResult(
                 ok=False,
                 error_code=exc.error_code,
@@ -122,7 +187,12 @@ class AgentToolRegistry:
                 elapsed_ms=int((time.perf_counter() - started) * 1000),
             )
         except Exception as exc:
-            LOGGER.exception("Agent tool failed: %s", tool_name)
+            LOGGER.exception(
+                "agent.tool.crashed tool=%s thread=%s error_type=%s",
+                tool_name,
+                context.thread_id,
+                type(exc).__name__,
+            )
             return AgentToolResult(
                 ok=False,
                 error_code="TOOL_EXECUTION_FAILED",
@@ -131,10 +201,39 @@ class AgentToolRegistry:
                 elapsed_ms=int((time.perf_counter() - started) * 1000),
             )
 
+        try:
+            validated_output = spec.output_model.model_validate(data)
+        except ValidationError as exc:
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            LOGGER.error(
+                "agent.tool.invalid_output tool=%s thread=%s "
+                "elapsed_ms=%s error=%s",
+                tool_name,
+                context.thread_id,
+                elapsed_ms,
+                log_value(str(exc)),
+            )
+            return AgentToolResult(
+                ok=False,
+                error_code="INVALID_TOOL_OUTPUT",
+                message=str(exc),
+                retryable=True,
+                elapsed_ms=elapsed_ms,
+            )
+
+        data = validated_output.model_dump(mode="json")
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        LOGGER.info(
+            "agent.tool.output tool=%s thread=%s ok=true elapsed_ms=%s data=%s",
+            tool_name,
+            context.thread_id,
+            elapsed_ms,
+            log_value(data),
+        )
         return AgentToolResult(
             ok=True,
             data=data,
-            elapsed_ms=int((time.perf_counter() - started) * 1000),
+            elapsed_ms=elapsed_ms,
         )
 
 
@@ -213,11 +312,34 @@ def build_agent_tool_registry(
                 "图片生成服务尚未配置",
             )
 
-        result = image_skill.invoke(
-            tool_input.prompt,
-            tool_input.aspect_ratio,
-            use_cache=True,
-        )
+        try:
+            result = image_skill.invoke(
+                tool_input.prompt,
+                tool_input.aspect_ratio,
+                use_cache=True,
+            )
+        except ImageGenerationError as exc:
+            detail = str(exc).casefold()
+            LOGGER.warning(
+                "agent.tool.generate_image.error thread=%s prompt=%s "
+                "aspect_ratio=%s error_type=%s message=%s",
+                context.thread_id,
+                log_value(tool_input.prompt),
+                tool_input.aspect_ratio,
+                type(exc).__name__,
+                log_value(str(exc)),
+            )
+            message = (
+                "图片服务连接或响应超时，请稍后重试。"
+                if "timed out" in detail or "timeout" in detail
+                else "图片生成失败，请稍后重试。"
+            )
+            raise AgentToolError(
+                "IMAGE_GENERATION_FAILED",
+                message,
+                retryable=True,
+            ) from exc
+
         return {
             "image_id": result.image_id,
             "image_url": f"/api/images/{result.file_name}",
@@ -275,6 +397,7 @@ def build_agent_tool_registry(
                     "输入 query。"
                 ),
                 input_model=GeneratePromptInput,
+                output_model=GeneratePromptOutput,
                 handler=generate_prompt,
             ),
             AgentToolSpec(
@@ -284,6 +407,7 @@ def build_agent_tool_registry(
                     "和去版权风险。输入 instruction，可选 current_prompt。"
                 ),
                 input_model=RewritePromptInput,
+                output_model=RewritePromptOutput,
                 handler=rewrite_prompt,
             ),
             AgentToolSpec(
@@ -293,6 +417,7 @@ def build_agent_tool_registry(
                     "输入 prompt 和 aspect_ratio。"
                 ),
                 input_model=GenerateImageInput,
+                output_model=GenerateImageOutput,
                 handler=generate_image,
             ),
             AgentToolSpec(
@@ -301,6 +426,7 @@ def build_agent_tool_registry(
                     "读取当前对话的历史消息。输入 limit，默认 20。"
                 ),
                 input_model=HistoryInput,
+                output_model=ConversationHistoryOutput,
                 handler=get_history,
             ),
             AgentToolSpec(
@@ -310,6 +436,7 @@ def build_agent_tool_registry(
                     "输入 prompt_text，可选 category。"
                 ),
                 input_model=AddPromptInput,
+                output_model=AddPromptOutput,
                 handler=add_prompt,
             ),
         ]

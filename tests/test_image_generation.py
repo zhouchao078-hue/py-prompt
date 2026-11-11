@@ -3,10 +3,18 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx2
+import pytest
+from openai import APITimeoutError
+
 from prompt_search_agent.images import (
     ImageEditRequest,
     ImageGenerationRequest,
     OpenAIImageProvider,
+)
+from prompt_search_agent.images.openai_compatible import (
+    _call_with_connect_retry,
+    _normalize_api_base,
 )
 from prompt_search_agent.skills.image_generation import (
     ImageGenerationSkill,
@@ -37,6 +45,89 @@ class FakeImages:
 class FakeOpenAIClient:
     def __init__(self, response: Any) -> None:
         self.images = FakeImages(response)
+
+
+def test_connect_timeout_is_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    monkeypatch.setattr(
+        "prompt_search_agent.images.openai_compatible.time.sleep",
+        lambda _: None,
+    )
+
+    def operation() -> str:
+        nonlocal calls
+        calls += 1
+
+        if calls < 3:
+            try:
+                raise httpx2.ConnectTimeout("handshake timed out")
+            except httpx2.ConnectTimeout as cause:
+                raise APITimeoutError(
+                    request=httpx2.Request(
+                        "POST",
+                        "https://relay.example.com/v1/images/generations",
+                    )
+                ) from cause
+
+        return "ok"
+
+    assert _call_with_connect_retry(operation) == "ok"
+    assert calls == 3
+
+
+def test_read_timeout_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    monkeypatch.setattr(
+        "prompt_search_agent.images.openai_compatible.time.sleep",
+        lambda _: None,
+    )
+
+    def operation() -> str:
+        nonlocal calls
+        calls += 1
+
+        try:
+            raise httpx2.ReadTimeout("response body timed out")
+        except httpx2.ReadTimeout as cause:
+            raise APITimeoutError(
+                request=httpx2.Request(
+                    "POST",
+                    "https://relay.example.com/v1/images/generations",
+                )
+            ) from cause
+
+    with pytest.raises(APITimeoutError):
+        _call_with_connect_retry(operation)
+
+    assert calls == 1
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        (
+            "https://relay.example.com/v1",
+            "https://relay.example.com/v1",
+        ),
+        (
+            "https://relay.example.com/v1/images/generations",
+            "https://relay.example.com/v1",
+        ),
+        (
+            "https://relay.example.com/v1/images/edits/",
+            "https://relay.example.com/v1",
+        ),
+    ],
+)
+def test_image_api_base_accepts_root_or_full_endpoint(
+    configured: str,
+    expected: str,
+) -> None:
+    assert _normalize_api_base(configured) == expected
 
 
 def test_provider_saves_base64_image(tmp_path: Path) -> None:

@@ -27,8 +27,26 @@ def _add_sources_json(connection: sqlite3.Connection) -> None:
         )
 
 
+def _add_conversation_message_metadata(
+    connection: sqlite3.Connection,
+) -> None:
+    columns = {
+        row["name"]
+        for row in connection.execute(
+            "PRAGMA table_info(conversation_messages)"
+        )
+    }
+
+    if "metadata_json" not in columns:
+        connection.execute(
+            "ALTER TABLE conversation_messages "
+            "ADD COLUMN metadata_json TEXT"
+        )
+
+
 MIGRATIONS: list[tuple[int, Migration]] = [
     (1, _add_sources_json),
+    (2, _add_conversation_message_metadata),
 ]
 
 LATEST_VERSION = max(version for version, _ in MIGRATIONS)

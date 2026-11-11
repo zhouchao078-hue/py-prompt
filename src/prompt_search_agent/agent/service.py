@@ -1,5 +1,6 @@
 """Service wrapper for the bounded ReAct agent."""
 
+import logging
 import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
@@ -24,6 +25,7 @@ from prompt_search_agent.chains.modify_prompt import (
 )
 from prompt_search_agent.config import Settings
 from prompt_search_agent.llm import create_chat_model
+from prompt_search_agent.log_utils import log_value
 from prompt_search_agent.models import WebSource
 from prompt_search_agent.search.sqlite import SqlitePromptSearchBackend
 from prompt_search_agent.skills.image_generation import (
@@ -41,6 +43,8 @@ from prompt_search_agent.tools import (
     build_web_fetch_tool,
     build_web_search_tool,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 class AgentServiceResult(BaseModel):
@@ -82,6 +86,11 @@ class AgentService:
         user_goal: str,
         thread_id: str,
     ) -> AgentServiceResult:
+        LOGGER.info(
+            "agent.run.start mode=sync thread=%s goal=%s",
+            thread_id,
+            log_value(user_goal),
+        )
         run_id, initial_state, config, snapshot = self._start_run(
             user_goal,
             thread_id,
@@ -98,6 +107,20 @@ class AgentService:
             snapshot,
             result,
         )
+        LOGGER.info(
+            "agent.run.finish mode=sync run=%s thread=%s status=%s "
+            "response_type=%s steps=%s image_id=%s image_url=%s prompt=%s "
+            "reply=%s",
+            run_id,
+            thread_id,
+            result.status,
+            result.response_type,
+            result.steps,
+            result.image_id,
+            result.image_url,
+            log_value(result.prompt),
+            log_value(result.reply),
+        )
         return result
 
     def stream(
@@ -105,6 +128,11 @@ class AgentService:
         user_goal: str,
         thread_id: str,
     ) -> Iterator[dict[str, Any]]:
+        LOGGER.info(
+            "agent.run.start mode=stream thread=%s goal=%s",
+            thread_id,
+            log_value(user_goal),
+        )
         run_id, initial_state, config, snapshot = self._start_run(
             user_goal,
             thread_id,
@@ -186,11 +214,33 @@ class AgentService:
                 snapshot,
                 result,
             )
+            LOGGER.info(
+                "agent.run.finish mode=stream run=%s thread=%s status=%s "
+                "response_type=%s steps=%s tools=%s image_id=%s image_url=%s "
+                "prompt=%s reply=%s",
+                run_id,
+                thread_id,
+                result.status,
+                result.response_type,
+                result.steps,
+                log_value(result.tool_names),
+                result.image_id,
+                result.image_url,
+                log_value(result.prompt),
+                log_value(result.reply),
+            )
             yield {
                 "event": "result",
                 "data": result.model_dump(),
             }
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
+            LOGGER.exception(
+                "agent.run.failed mode=stream run=%s thread=%s "
+                "error_type=%s",
+                run_id,
+                thread_id,
+                type(exc).__name__,
+            )
             yield {
                 "event": "error",
                 "message": str(exc),
@@ -226,6 +276,15 @@ class AgentService:
                 "thread_id": run_id,
             }
         }
+        LOGGER.info(
+            "agent.run.initialized run=%s thread=%s context_chars=%s "
+            "current_prompt=%s max_steps=%s",
+            run_id,
+            thread_id,
+            len(initial_state["conversation_context"]),
+            log_value(initial_state["current_prompt"]),
+            self.max_steps,
+        )
         return run_id, initial_state, config, snapshot
 
     @staticmethod
@@ -284,6 +343,26 @@ class AgentService:
             thread_id,
             "assistant",
             assistant_content,
+            metadata={
+                "kind": "agent_result",
+                "response_type": result.response_type,
+                "prompt": result.prompt,
+                "reply": result.reply,
+                "image_id": result.image_id,
+                "image_url": result.image_url,
+                "sources": [
+                    source.model_dump()
+                    for source in result.sources
+                ],
+                "tool_names": result.tool_names,
+                "steps": result.steps,
+            },
+        )
+        LOGGER.info(
+            "agent.history.persisted thread=%s user=%s assistant=%s",
+            thread_id,
+            log_value(user_goal),
+            log_value(assistant_content),
         )
 
         if result.prompt:

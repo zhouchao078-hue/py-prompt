@@ -9,6 +9,7 @@ from prompt_search_agent.graph.state import (
     NO_MATCHING_PROMPT,
     AgentState,
 )
+from prompt_search_agent.log_utils import log_value
 from prompt_search_agent.models import SearchRequest, WebSource
 from prompt_search_agent.search.base import PromptSearchBackend
 from prompt_search_agent.streaming import invoke_with_tokens, token_sink
@@ -41,8 +42,18 @@ def build_parse_request_node(parse_chain):
         query = state["user_query"]
         conversation_context = state.get("conversation_context", "")
         last_error = "No structured result"
+        LOGGER.info(
+            "prompt.node.parse.start query=%s context_chars=%s",
+            log_value(query),
+            len(conversation_context),
+        )
 
-        for _ in range(PARSE_ATTEMPTS):
+        for attempt in range(PARSE_ATTEMPTS):
+            LOGGER.info(
+                "prompt.node.parse.request attempt=%s/%s",
+                attempt + 1,
+                PARSE_ATTEMPTS,
+            )
             raw_result = parse_chain.invoke(
                 {
                     "query": query,
@@ -55,8 +66,17 @@ def build_parse_request_node(parse_chain):
                     request = SearchRequest.model_validate(parsed)
                 except ValidationError as exc:
                     last_error = str(exc)
+                    LOGGER.warning(
+                        "prompt.node.parse.invalid attempt=%s error=%s",
+                        attempt + 1,
+                        log_value(last_error),
+                    )
                     continue
 
+                LOGGER.info(
+                    "prompt.node.parse.output request=%s",
+                    log_value(request),
+                )
                 return {"request": request}
 
             parsing_error = raw_result.get("parsing_error")
@@ -71,6 +91,11 @@ def build_parse_request_node(parse_chain):
                 f"finish_reason={finish_reason!r}"
             )
 
+        LOGGER.error(
+            "prompt.node.parse.failed attempts=%s error=%s",
+            PARSE_ATTEMPTS,
+            log_value(last_error),
+        )
         return {"error": last_error}
     return analysis_user_input
 
@@ -78,9 +103,21 @@ def build_parse_request_node(parse_chain):
 def build_search_prompts_node(search_backend: PromptSearchBackend):
     def search_node(state:AgentState) -> dict:
         request = state.get("request")
+        LOGGER.info(
+            "prompt.node.search.start request=%s",
+            log_value(request),
+        )
         if request is None:
+            LOGGER.error("prompt.node.search.failed reason=missing_request")
             return {"error": "Missing parsed search request"}
         candidates = search_backend.search(request, top_k=20)
+        LOGGER.info(
+            "prompt.node.search.output candidates=%s top_ids=%s",
+            len(candidates),
+            log_value(
+                [candidate.prompt_id for candidate in candidates[:5]]
+            ),
+        )
         return {"candidates": candidates}
     return search_node
 
@@ -90,11 +127,17 @@ def build_rerank_prompts_node(rerank_chain):
         user_query = state["user_query"]
         request = state.get("request")
         candidates = state.get("candidates") or []
+        LOGGER.info(
+            "prompt.node.rerank.start candidates=%s",
+            len(candidates),
+        )
 
         if request is None:
+            LOGGER.error("prompt.node.rerank.failed reason=missing_request")
             return {"error": "Missing search request"}
 
         if not candidates:
+            LOGGER.warning("prompt.node.rerank.output selected=0 no_match")
             return {
                 "reranked_candidates": [],
                 "needs_generation": False,
@@ -111,7 +154,13 @@ def build_rerank_prompts_node(rerank_chain):
             for candidate in candidates[:20]
         )
 
-        for _ in range(RERANK_ATTEMPTS):
+        for attempt in range(RERANK_ATTEMPTS):
+            LOGGER.info(
+                "prompt.node.rerank.request attempt=%s/%s candidates=%s",
+                attempt + 1,
+                RERANK_ATTEMPTS,
+                len(candidates),
+            )
             raw_result = rerank_chain.invoke(
                 {
                     "user_query": user_query,
@@ -162,17 +211,32 @@ def build_rerank_prompts_node(rerank_chain):
                         "needs_generation": True,
                     }
 
+                LOGGER.warning(
+                    "prompt.node.rerank.output selected=0 no_match attempt=%s",
+                    attempt + 1,
+                )
                 return {
                     "reranked_candidates": [],
                     "needs_generation": False,
                     "error": NO_MATCHING_PROMPT,
                 }
 
+            LOGGER.info(
+                "prompt.node.rerank.output selected=%s ids=%s "
+                "needs_generation=%s",
+                len(selected),
+                log_value([candidate.prompt_id for candidate in selected]),
+                parsed.needs_generation,
+            )
             return {
                 "reranked_candidates": selected,
                 "needs_generation": parsed.needs_generation,
             }
 
+        LOGGER.error(
+            "prompt.node.rerank.failed attempts=%s",
+            RERANK_ATTEMPTS,
+        )
         return {"error": "Rerank failed after retries"}
 
     return rerank_prompts_node
@@ -188,6 +252,11 @@ def build_web_research_node(
     def web_research_node(state: AgentState) -> dict:
         started = time.monotonic()
         user_query = state["user_query"]
+        LOGGER.info(
+            "prompt.node.web.start query=%s budget_seconds=%s",
+            log_value(user_query),
+            budget_seconds,
+        )
 
         # 联网是增强不是依赖：Tavily 挂了要退回本地结果，而不是整单失败。
         try:
@@ -219,6 +288,11 @@ def build_web_research_node(
             snippet_by_url[url] = str(result.get("content") or "").strip()
 
         urls = list(title_by_url)[:max_sources]
+        LOGGER.info(
+            "prompt.node.web.search_output results=%s selected_urls=%s",
+            len(search_results),
+            len(urls),
+        )
 
         fetched_by_url: dict[str, str] = {}
         elapsed = time.monotonic() - started
@@ -269,6 +343,10 @@ def build_web_research_node(
             )
 
         if not sources:
+            LOGGER.warning(
+                "prompt.node.web.output sources=0 elapsed_ms=%s",
+                int((time.monotonic() - started) * 1000),
+            )
             return {
                 "web_context": "",
                 "web_sources": [],
@@ -284,6 +362,12 @@ def build_web_research_node(
                 f"正文：{source.content}"
             )
             for index, source in enumerate(sources, start=1)
+        )
+        LOGGER.info(
+            "prompt.node.web.output sources=%s context_chars=%s elapsed_ms=%s",
+            len(sources),
+            len(web_context),
+            int((time.monotonic() - started) * 1000),
         )
 
         return {
@@ -308,9 +392,16 @@ def build_compose_prompts_node(compose_chain):
             or []
         )
         web_context = state.get("web_context", "")
+        LOGGER.info(
+            "prompt.node.compose.start candidates=%s web_context_chars=%s",
+            len(candidates),
+            len(web_context),
+        )
         if request is None:
+            LOGGER.error("prompt.node.compose.failed reason=missing_request")
             return {"error": "Missing request for prompt composition"}
         if not candidates and not web_context:
+            LOGGER.warning("prompt.node.compose.output no_context")
             return {"error": NO_MATCHING_PROMPT}
         request_json = request.model_dump_json()
         candidates_text = "\n\n".join(
@@ -331,7 +422,13 @@ def build_compose_prompts_node(compose_chain):
             token_sink(config),
         )
         if not final_prompt:
+            LOGGER.error("prompt.node.compose.failed reason=empty_output")
             return {"error": "LLM returned an empty prompt"}
+        LOGGER.info(
+            "prompt.node.compose.output prompt_chars=%s prompt=%s",
+            len(final_prompt),
+            log_value(final_prompt),
+        )
         return {
             "final_prompt": final_prompt.strip(),
             "generated_from_brief": False,
@@ -342,8 +439,13 @@ def build_compose_prompts_node(compose_chain):
 def build_generate_prompt_node(generate_chain):
     def generate_prompt_node(state: AgentState, config=None) -> dict:
         request = state.get("request")
+        LOGGER.info(
+            "prompt.node.generate.start request=%s",
+            log_value(request),
+        )
 
         if request is None:
+            LOGGER.error("prompt.node.generate.failed reason=missing_request")
             return {"error": "Missing request for direct generation"}
 
         final_prompt = invoke_with_tokens(
@@ -362,8 +464,14 @@ def build_generate_prompt_node(generate_chain):
         )
 
         if not final_prompt:
+            LOGGER.error("prompt.node.generate.failed reason=empty_output")
             return {"error": "LLM returned an empty prompt"}
 
+        LOGGER.info(
+            "prompt.node.generate.output prompt_chars=%s prompt=%s",
+            len(final_prompt),
+            log_value(final_prompt),
+        )
         return {
             "final_prompt": final_prompt.strip(),
             "generated_from_brief": True,

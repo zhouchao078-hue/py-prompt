@@ -52,6 +52,7 @@ from prompt_search_agent.images import (
     ImageGenerationError,
     ImageGenerationResult,
 )
+from prompt_search_agent.log_utils import log_value
 from prompt_search_agent.maintenance import disk_free_bytes, run_janitor
 from prompt_search_agent.metrics import (
     METRICS,
@@ -280,12 +281,22 @@ class HistoryMessage(BaseModel):
     id: int
     role: str
     content: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class HistoryResponse(BaseModel):
     thread_id: str
     summary: str
     messages: list[HistoryMessage]
+
+
+class ImageResultHistoryRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=12000)
+    image_id: str = Field(min_length=1, max_length=100)
+    image_url: str = Field(
+        pattern=r"^/api/images/[A-Za-z0-9._-]+$",
+    )
+    prompt: str | None = Field(default=None, max_length=12000)
 
 
 class DeleteHistoryResponse(BaseModel):
@@ -702,9 +713,24 @@ def _run_image_job(
     use_cache: bool,
 ) -> None:
     """在线程里跑生图，失败也只更新任务状态，不抛到请求线程。"""
+    started = time.perf_counter()
+    LOGGER.info(
+        "image.job.start job=%s ratio=%s use_cache=%s prompt=%s",
+        job_id,
+        ratio,
+        use_cache,
+        log_value(prompt),
+    )
     try:
         result = skill.invoke(prompt, ratio, use_cache=use_cache)
-    except Exception:
+    except Exception as exc:
+        LOGGER.error(
+            "image.job.failed job=%s stage=skill.invoke elapsed_ms=%s "
+            "error_type=%s",
+            job_id,
+            int((time.perf_counter() - started) * 1000),
+            type(exc).__name__,
+        )
         # 后台线程不能被单次失败打死，否则任务会永久停在 pending。
         LOGGER.warning("生图任务 %s 失败", job_id, exc_info=True)
         METRICS.inc("image_jobs_total", (("status", "failed"),))
@@ -732,6 +758,15 @@ def _run_image_job(
         job.image_id = result.image_id
         job.image_url = f"/api/images/{result.file_name}"
         job.image_cached = result.cached
+    LOGGER.info(
+        "image.job.complete job=%s elapsed_ms=%s image_id=%s image_url=%s "
+        "cached=%s",
+        job_id,
+        int((time.perf_counter() - started) * 1000),
+        result.image_id,
+        f"/api/images/{result.file_name}",
+        result.cached,
+    )
 
 
 def _run_image_edit_job(
@@ -742,6 +777,16 @@ def _run_image_edit_job(
     mask_bytes: bytes,
     ratio: str,
 ) -> None:
+    started = time.perf_counter()
+    LOGGER.info(
+        "image.edit_job.start job=%s source=%s mask_bytes=%s ratio=%s "
+        "prompt=%s",
+        job_id,
+        image_path,
+        len(mask_bytes),
+        ratio,
+        log_value(prompt),
+    )
     try:
         result = skill.edit(
             prompt,
@@ -750,7 +795,14 @@ def _run_image_edit_job(
             ratio,
             use_cache=True,
         )
-    except Exception:
+    except Exception as exc:
+        LOGGER.error(
+            "image.edit_job.failed job=%s stage=skill.edit elapsed_ms=%s "
+            "error_type=%s",
+            job_id,
+            int((time.perf_counter() - started) * 1000),
+            type(exc).__name__,
+        )
         LOGGER.warning("图片编辑任务 %s 失败", job_id, exc_info=True)
         METRICS.inc("image_jobs_total", (("status", "failed"),))
 
@@ -779,6 +831,15 @@ def _run_image_edit_job(
         job.image_id = result.image_id
         job.image_url = f"/api/images/{result.file_name}"
         job.image_cached = result.cached
+    LOGGER.info(
+        "image.edit_job.complete job=%s elapsed_ms=%s image_id=%s "
+        "image_url=%s cached=%s",
+        job_id,
+        int((time.perf_counter() - started) * 1000),
+        result.image_id,
+        f"/api/images/{result.file_name}",
+        result.cached,
+    )
 
 
 def _configure_logging() -> None:
@@ -1766,6 +1827,12 @@ def create_app(
             _prune_image_jobs(now)
             IMAGE_JOBS[job_id] = ImageJob(created_at=now)
 
+        LOGGER.info(
+            "image.job.queued job=%s ratio=%s prompt=%s",
+            job_id,
+            payload.aspect_ratio,
+            log_value(payload.prompt),
+        )
         request.app.state.image_executor.submit(
             _run_image_job_with_quota,
             job_id,
@@ -1827,6 +1894,13 @@ def create_app(
             _prune_image_jobs(now)
             IMAGE_JOBS[job_id] = ImageJob(created_at=now)
 
+        LOGGER.info(
+            "image.edit_job.queued job=%s source=%s ratio=%s prompt=%s",
+            job_id,
+            source_path,
+            payload.aspect_ratio,
+            log_value(payload.prompt),
+        )
         request.app.state.image_executor.submit(
             _run_image_edit_job_with_quota,
             job_id,
@@ -1899,6 +1973,45 @@ def create_app(
             size=result.size,
         )
 
+    @app.post("/api/history/{thread_id}/image-result")
+    def append_image_result_message(
+        thread_id: str,
+        payload: ImageResultHistoryRequest,
+        request: Request,
+    ) -> dict[str, bool]:
+        _require_owned_conversation(thread_id, request)
+        settings = request.app.state.settings
+
+        if settings is None:
+            raise HTTPException(
+                status_code=503,
+                detail="对话数据存储尚未就绪。",
+            )
+
+        repository = ConversationRepository(
+            settings.prompt_db_path,
+            settings.sqlite_busy_timeout_ms,
+        )
+        repository.append_message(
+            thread_id,
+            "assistant",
+            payload.content,
+            metadata={
+                "kind": "image_edit_result",
+                "response_type": "image",
+                "prompt": payload.prompt,
+                "reply": payload.content,
+                "image_id": payload.image_id,
+                "image_url": payload.image_url,
+            },
+        )
+        session_repo = _session_repo(request)
+
+        if session_repo is not None:
+            session_repo.touch_conversation(thread_id)
+
+        return {"inserted": True}
+
     @app.get(
         "/api/history/{thread_id}",
         response_model=HistoryResponse,
@@ -1931,6 +2044,7 @@ def create_app(
                     id=message.id,
                     role=message.role,
                     content=message.content,
+                    metadata=message.metadata,
                 )
                 for message in messages
             ],

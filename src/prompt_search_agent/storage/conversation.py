@@ -1,8 +1,10 @@
 """SQLite-backed task-scoped conversation memory."""
 
+import json
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from prompt_search_agent.storage.database import connect_database
 
@@ -12,6 +14,7 @@ class ConversationMessage:
     id: int
     role: str
     content: str
+    metadata: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -60,6 +63,27 @@ class CompressionBatch:
     cutoff_message_id: int
 
 
+def _parse_metadata(value: str | None) -> dict[str, Any]:
+    if not value:
+        return {}
+
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return {}
+
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _message_from_row(row: Any) -> ConversationMessage:
+    return ConversationMessage(
+        id=int(row["id"]),
+        role=str(row["role"]),
+        content=str(row["content"]),
+        metadata=_parse_metadata(row["metadata_json"]),
+    )
+
+
 class ConversationRepository:
     def __init__(
         self,
@@ -88,6 +112,7 @@ class ConversationRepository:
         thread_id: str,
         role: str,
         content: str,
+        metadata: dict[str, Any] | None = None,
     ) -> int:
         self.ensure_conversation(thread_id)
 
@@ -99,11 +124,25 @@ class ConversationRepository:
                 INSERT INTO conversation_messages(
                     thread_id,
                     role,
-                    content
+                    content,
+                    metadata_json
                 )
-                VALUES (?, ?, ?)
+                VALUES (?, ?, ?, ?)
                 """,
-                (thread_id, role, content),
+                (
+                    thread_id,
+                    role,
+                    content,
+                    (
+                        json.dumps(
+                            metadata,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                        if metadata
+                        else None
+                    ),
+                ),
             )
             connection.commit()
             if cursor.lastrowid is None:
@@ -130,7 +169,7 @@ class ConversationRepository:
             ).fetchone()
             rows = connection.execute(
                 """
-                SELECT id, role, content
+                SELECT id, role, content, metadata_json
                 FROM conversation_messages
                 WHERE thread_id = ?
                 ORDER BY id DESC
@@ -140,11 +179,7 @@ class ConversationRepository:
             ).fetchall()
 
         recent_messages = [
-            ConversationMessage(
-                id=int(row["id"]),
-                role=str(row["role"]),
-                content=str(row["content"]),
-            )
+            _message_from_row(row)
             for row in reversed(rows)
         ]
 
@@ -169,9 +204,9 @@ class ConversationRepository:
         ) as connection:
             rows = connection.execute(
                 """
-                SELECT id, role, content
+                SELECT id, role, content, metadata_json
                 FROM (
-                    SELECT id, role, content
+                    SELECT id, role, content, metadata_json
                     FROM conversation_messages
                     WHERE thread_id = ?
                     ORDER BY id DESC
@@ -182,14 +217,7 @@ class ConversationRepository:
                 (thread_id, safe_limit),
             ).fetchall()
 
-        return [
-            ConversationMessage(
-                id=int(row["id"]),
-                role=str(row["role"]),
-                content=str(row["content"]),
-            )
-            for row in rows
-        ]
+        return [_message_from_row(row) for row in rows]
 
     def get_summary(self, thread_id: str) -> str:
         self.ensure_conversation(thread_id)
@@ -264,7 +292,7 @@ class ConversationRepository:
             ).fetchone()
             rows = connection.execute(
                 """
-                SELECT id, role, content
+                SELECT id, role, content, metadata_json
                 FROM conversation_messages
                 WHERE thread_id = ?
                   AND id > ?
@@ -280,14 +308,7 @@ class ConversationRepository:
             return None
 
         evicted_rows = rows[:-recent_message_limit]
-        messages = [
-            ConversationMessage(
-                id=int(row["id"]),
-                role=str(row["role"]),
-                content=str(row["content"]),
-            )
-            for row in evicted_rows
-        ]
+        messages = [_message_from_row(row) for row in evicted_rows]
 
         return CompressionBatch(
             existing_summary=str(conversation["summary"] or ""),

@@ -104,7 +104,8 @@ class Settings(BaseSettings):
     image_response_format: str | None = None
     # 让中转直接返回 webp：体积约为 PNG 的 1/5，但需要上游支持 output_format。
     image_output_format: str | None = None
-    image_timeout_seconds: float = 120.0
+    image_timeout_seconds: float = 300.0
+    image_connect_timeout_seconds: float = 45.0
     image_max_download_bytes: int = 25_000_000
     image_retention_days: int = 7
     image_size_square: str = "1024x1024"

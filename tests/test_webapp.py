@@ -228,8 +228,16 @@ def test_agent_page_contains_live_progress_mounts() -> None:
     assert 'id="agentTraceStatus"' in response.text
     assert 'id="agentTraceDetail"' in response.text
     assert 'id="agentProgressBar"' in response.text
+    assert 'id="agentSessionSelect"' in response.text
+    assert 'id="agentNewConversation"' in response.text
+    assert 'id="sessionDrawer"' in response.text
+    assert 'id="sessionDrawerList"' in response.text
+    assert 'id="drawerNewConversation"' in response.text
+    assert 'id="topbarNewConversation"' in response.text
     assert 'id="previewImageActions"' in response.text
     assert 'id="agentImageActions"' in response.text
+    assert 'id="imageViewerDialog"' in response.text
+    assert 'id="imageViewerImage"' in response.text
     assert 'id="imageEditorDialog"' in response.text
     assert 'id="imageEditorCanvas"' in response.text
 
@@ -440,7 +448,12 @@ def test_history_endpoint_returns_full_conversation(
         )
         thread_id = created.json()["thread_id"]
         repo.append_message(thread_id, "user", "first question")
-        repo.append_message(thread_id, "assistant", "first answer")
+        repo.append_message(
+            thread_id,
+            "assistant",
+            "first answer",
+            metadata={"response_type": "image"},
+        )
         repo.append_message(thread_id, "user", "second question")
         repo.update_summary(thread_id, "compressed summary", 2)
         response = client.get(
@@ -457,6 +470,47 @@ def test_history_endpoint_returns_full_conversation(
         "first answer",
         "second question",
     ]
+    assert data["messages"][1]["metadata"] == {
+        "response_type": "image",
+    }
+
+
+def test_history_image_result_persists_image_metadata(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        deepseek_api_key=SecretStr("test-key"),
+        prompt_db_path=tmp_path / "prompt_index.sqlite3",
+    )
+    initialize_database(settings.prompt_db_path)
+    app = create_app(
+        lambda: FakePromptService(),
+        app_settings=settings,
+    )
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/conversations",
+            json={"tool": "agent"},
+        )
+        thread_id = created.json()["thread_id"]
+        saved = client.post(
+            f"/api/history/{thread_id}/image-result",
+            json={
+                "content": "edited image",
+                "image_id": "edited-1",
+                "image_url": "/api/images/edited-1.png",
+                "prompt": "make the coat blue",
+            },
+        )
+        history = client.get(f"/api/history/{thread_id}")
+
+    assert saved.status_code == 200
+    assert saved.json() == {"inserted": True}
+    message = history.json()["messages"][-1]
+    assert message["content"] == "edited image"
+    assert message["metadata"]["response_type"] == "image"
+    assert message["metadata"]["image_url"] == "/api/images/edited-1.png"
 
 
 def test_image_job_renders_in_background(tmp_path: Path) -> None:

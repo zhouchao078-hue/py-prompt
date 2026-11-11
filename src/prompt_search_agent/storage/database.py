@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS conversation_messages (
     thread_id TEXT NOT NULL,
     role TEXT NOT NULL,
     content TEXT NOT NULL,
+    metadata_json TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (thread_id)
         REFERENCES conversations(thread_id)
