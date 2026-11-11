@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "A local AIGC prompt retrieval and composition assistant"
 readme = "README.md"
 authors = [
-    { name = "lenovo", email = "1103139311@qq.com" }
+    { name = "zhouchao078-hue", email = "zhouchao078-hue@users.noreply.github.com" }
 ]
 requires-python = ">=3.12"
 dependencies = [
