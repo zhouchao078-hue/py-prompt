@@ -1,6 +1,8 @@
 """FastAPI application for the prompt and media workbench."""
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import os
@@ -8,12 +10,12 @@ import queue
 import sqlite3
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Any, Literal, Protocol
 from uuid import uuid4
 
 import uvicorn
@@ -29,6 +31,11 @@ from fastapi.responses import (
 from openai import OpenAIError
 from pydantic import BaseModel, Field, SecretStr
 
+from prompt_search_agent.agent import (
+    AgentService,
+    AgentServiceResult,
+    build_agent_service,
+)
 from prompt_search_agent.config import (
     PROJECT_ROOT,
     Settings,
@@ -128,10 +135,33 @@ class PromptServiceLike(Protocol):
     ) -> PromptServiceResult: ...
 
 
+class AgentServiceLike(Protocol):
+    def run(
+        self,
+        user_goal: str,
+        thread_id: str,
+    ) -> AgentServiceResult: ...
+
+    def stream(
+        self,
+        user_goal: str,
+        thread_id: str,
+    ) -> Iterator[dict[str, Any]]: ...
+
+
 class ImageGenerationSkillLike(Protocol):
     def invoke(
         self,
         prompt: str,
+        aspect_ratio: str | None = None,
+        use_cache: bool = True,
+    ) -> ImageGenerationResult: ...
+
+    def edit(
+        self,
+        prompt: str,
+        image_path: Path,
+        mask_bytes: bytes,
         aspect_ratio: str | None = None,
         use_cache: bool = True,
     ) -> ImageGenerationResult: ...
@@ -156,6 +186,26 @@ class PromptResponse(BaseModel):
     generated_from_brief: bool
     thread_id: str
     sources: list[WebSource] = []
+
+
+class AgentRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+    thread_id: str | None = None
+
+
+class AgentResponse(BaseModel):
+    run_id: str
+    thread_id: str
+    status: str
+    response_type: Literal["prompt", "image", "message", "failed"]
+    prompt: str | None = None
+    reply: str | None = None
+    image_id: str | None = None
+    image_url: str | None = None
+    sources: list[WebSource] = []
+    tool_names: list[str] = []
+    decision_summaries: list[str] = []
+    steps: int = 0
 
 
 class MediaRequest(BaseModel):
@@ -206,6 +256,13 @@ class AddPromptResponse(BaseModel):
 
 class DirectImageRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=8000)
+    aspect_ratio: Literal["1:1", "3:2", "2:3"] = "2:3"
+
+
+class DirectImageEditRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=8000)
+    image_url: str = Field(min_length=1, max_length=300)
+    mask_data_url: str = Field(min_length=1, max_length=2_000_000)
     aspect_ratio: Literal["1:1", "3:2", "2:3"] = "2:3"
 
 
@@ -261,7 +318,7 @@ class ConversationListResponse(BaseModel):
 
 
 class CreateConversationRequest(BaseModel):
-    tool: Literal["prompt", "media"] = "prompt"
+    tool: Literal["prompt", "media", "agent"] = "prompt"
 
 
 def _secret_ready(value: SecretStr | None) -> bool:
@@ -291,11 +348,17 @@ def _issue_session_cookie(
         return
 
     signature = sign_token(session_id, settings.thread_secret_value)
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    is_https = (
+        request.url.scheme == "https"
+        or forwarded_proto.split(",", maxsplit=1)[0].strip() == "https"
+    )
     response.set_cookie(
         settings.session_cookie_name,
         f"{session_id}.{signature}",
         max_age=settings.session_cookie_days * 86400,
         httponly=True,
+        secure=settings.public_mode or is_https,
         samesite="lax",
         path="/",
     )
@@ -394,6 +457,71 @@ def _sse(event: str, data: object) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def _decode_edit_mask(mask_data_url: str) -> bytes:
+    prefix = "data:image/png;base64,"
+
+    if not mask_data_url.startswith(prefix):
+        raise HTTPException(
+            status_code=422,
+            detail="编辑蒙版必须是 PNG 图片。",
+        )
+
+    try:
+        mask_bytes = base64.b64decode(
+            mask_data_url.removeprefix(prefix),
+            validate=True,
+        )
+    except (ValueError, binascii.Error) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="编辑蒙版数据无效。",
+        ) from exc
+
+    if not mask_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise HTTPException(
+            status_code=422,
+            detail="编辑蒙版不是有效的 PNG 图片。",
+        )
+
+    return mask_bytes
+
+
+def _resolve_edit_source(
+    image_url: str,
+    output_dir: Path,
+) -> Path:
+    prefix = "/api/images/"
+
+    if not image_url.startswith(prefix):
+        raise HTTPException(
+            status_code=422,
+            detail="原图地址无效。",
+        )
+
+    file_name = image_url.removeprefix(prefix)
+
+    if (
+        not file_name
+        or Path(file_name).name != file_name
+        or file_name.startswith(".")
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="原图文件名无效。",
+        )
+
+    root = output_dir.resolve()
+    image_path = (root / file_name).resolve()
+
+    if image_path.parent != root or not image_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="找不到需要编辑的原图。",
+        )
+
+    return image_path
+
+
 def _run_image_job_with_quota(
     job_id: str,
     skill: ImageGenerationSkillLike,
@@ -414,6 +542,30 @@ def _run_image_job_with_quota(
 
         # 命中缓存没有成本，把小时配额也退回去。
         quota.release(ip, stamp, refund=cached)
+
+
+def _run_image_edit_job_with_quota(
+    job_id: str,
+    skill: ImageGenerationSkillLike,
+    prompt: str,
+    image_path: Path,
+    mask_bytes: bytes,
+    ratio: str,
+    quota: ImageQuota,
+    ip: str,
+    stamp: float,
+) -> None:
+    try:
+        _run_image_edit_job(
+            job_id,
+            skill,
+            prompt,
+            image_path,
+            mask_bytes,
+            ratio,
+        )
+    finally:
+        quota.release(ip, stamp, refund=False)
 
 
 async def _janitor_loop(settings: Settings, stop: asyncio.Event) -> None:
@@ -582,6 +734,53 @@ def _run_image_job(
         job.image_cached = result.cached
 
 
+def _run_image_edit_job(
+    job_id: str,
+    skill: ImageGenerationSkillLike,
+    prompt: str,
+    image_path: Path,
+    mask_bytes: bytes,
+    ratio: str,
+) -> None:
+    try:
+        result = skill.edit(
+            prompt,
+            image_path,
+            mask_bytes,
+            ratio,
+            use_cache=True,
+        )
+    except Exception:
+        LOGGER.warning("图片编辑任务 %s 失败", job_id, exc_info=True)
+        METRICS.inc("image_jobs_total", (("status", "failed"),))
+
+        with IMAGE_JOBS_LOCK:
+            job = IMAGE_JOBS.get(job_id)
+
+            if job is not None:
+                job.status = "failed"
+                job.message = (
+                    "区域修改失败，请确认当前图片中转支持图片编辑接口。"
+                )
+
+        return
+
+    METRICS.inc("image_jobs_total", (("status", "done"),))
+    USAGE.record_image()
+
+    with IMAGE_JOBS_LOCK:
+        job = IMAGE_JOBS.get(job_id)
+
+        if job is None:
+            return
+
+        job.status = "done"
+        job.prompt = result.prompt
+        job.image_id = result.image_id
+        job.image_url = f"/api/images/{result.file_name}"
+        job.image_cached = result.cached
+
+
 def _configure_logging() -> None:
     """uvicorn 只配置自己的 logger，业务日志需要显式接到 root 上。"""
     root = logging.getLogger()
@@ -597,6 +796,9 @@ def _configure_logging() -> None:
 
 def create_app(
     service_factory: Callable[[], PromptServiceLike] | None = None,
+    agent_service_factory: (
+        Callable[[], AgentServiceLike | None] | None
+    ) = None,
     image_skill_factory: (
         Callable[[], ImageGenerationSkillLike | None] | None
     ) = None,
@@ -615,6 +817,10 @@ def create_app(
     async def lifespan(app: FastAPI):
         settings = resolved_settings
         app.state.settings = settings
+
+        if settings is not None:
+            settings.assert_runtime_safe()
+
         app.state.image_output_dir = image_output_dir or DEFAULT_OUTPUT_DIR
         app.state.generation_limiter = CapacityLimiter(
             settings.max_concurrent_generations if settings is not None else 8
@@ -666,6 +872,17 @@ def create_app(
             app.state.prompt_service = None
             app.state.image_skill = None
 
+        if agent_service_factory is not None:
+            app.state.agent_service = agent_service_factory()
+        elif settings is not None and service_factory is None:
+            try:
+                app.state.agent_service = build_agent_service(settings)
+            except Exception:
+                LOGGER.exception("Agent 服务初始化失败，进入降级模式")
+                app.state.agent_service = None
+        else:
+            app.state.agent_service = None
+
         janitor_stop: asyncio.Event | None = None
         janitor_task: asyncio.Task[None] | None = None
 
@@ -685,6 +902,10 @@ def create_app(
                 await asyncio.wait_for(janitor_task, timeout=5)
 
         app.state.image_executor.shutdown(wait=False, cancel_futures=True)
+        agent_service = app.state.agent_service
+
+        if isinstance(agent_service, AgentService):
+            agent_service.close()
 
     app = FastAPI(
         title="Prompt Atelier",
@@ -801,7 +1022,7 @@ def create_app(
     def list_conversations(
         request: Request,
         response: Response,
-        tool: Literal["prompt", "media"] = "prompt",
+        tool: Literal["prompt", "media", "agent"] = "prompt",
     ) -> ConversationListResponse:
         session_id = _ensure_session(request, response)
         repo = _session_repo(request)
@@ -992,7 +1213,7 @@ def create_app(
         if session_id is not None and repo is not None:
             thread_id = repo.resolve_thread(
                 session_id,
-                "prompt",
+                "agent",
                 payload.thread_id,
                 payload.message[:40],
             )
@@ -1037,6 +1258,142 @@ def create_app(
             repo.touch_conversation(result.thread_id)
 
         return _build_prompt_response(result)
+
+    @app.post("/api/agent", response_model=AgentResponse)
+    def run_agent(
+        payload: AgentRequest,
+        request: Request,
+        response: Response,
+    ) -> AgentResponse:
+        agent_service: AgentServiceLike | None = (
+            request.app.state.agent_service
+        )
+        if agent_service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Agent 服务尚未就绪",
+            )
+
+        session_id = _ensure_session(request, response)
+        repo = _session_repo(request)
+        thread_id = payload.thread_id or uuid4().hex
+
+        if session_id is not None and repo is not None:
+            thread_id = repo.resolve_thread(
+                session_id,
+                "prompt",
+                payload.thread_id,
+                payload.message[:40],
+            )
+
+        try:
+            result = agent_service.run(
+                payload.message,
+                thread_id,
+            )
+        except Exception as exc:
+            LOGGER.exception(
+                "Agent run failed trace_id=%s",
+                getattr(request.state, "trace_id", "-"),
+            )
+            raise HTTPException(
+                status_code=500,
+                detail="Agent 执行失败，请稍后重试。",
+            ) from exc
+
+        if session_id is not None and repo is not None:
+            repo.touch_conversation(result.thread_id)
+
+        return AgentResponse(
+            run_id=result.run_id,
+            thread_id=result.thread_id,
+            status=result.status,
+            response_type=result.response_type,
+            prompt=result.prompt,
+            reply=result.reply,
+            image_id=result.image_id,
+            image_url=result.image_url,
+            sources=result.sources,
+            tool_names=result.tool_names,
+            decision_summaries=result.decision_summaries,
+            steps=result.steps,
+        )
+
+    @app.post("/api/agent/stream")
+    def run_agent_stream(
+        payload: AgentRequest,
+        request: Request,
+        response: Response,
+    ) -> StreamingResponse:
+        agent_service: AgentServiceLike | None = (
+            request.app.state.agent_service
+        )
+        if agent_service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Agent 服务尚未就绪",
+            )
+
+        session_id = _ensure_session(request, response)
+        repo = _session_repo(request)
+        thread_id = payload.thread_id or uuid4().hex
+
+        if session_id is not None and repo is not None:
+            thread_id = repo.resolve_thread(
+                session_id,
+                "agent",
+                payload.thread_id,
+                payload.message[:40],
+            )
+
+        trace_id = getattr(request.state, "trace_id", "-")
+
+        def event_stream():
+            yield _sse("open", {"trace_id": trace_id})
+
+            try:
+                for event in agent_service.stream(
+                    payload.message,
+                    thread_id,
+                ):
+                    yield _sse("agent", event)
+
+                    if event.get("event") == "result":
+                        result = event.get("data") or {}
+
+                        if session_id is not None and repo is not None:
+                            repo.touch_conversation(
+                                str(result.get("thread_id", thread_id))
+                            )
+            except Exception:
+                LOGGER.exception(
+                    "Agent stream failed trace_id=%s",
+                    trace_id,
+                )
+                yield _sse(
+                    "error",
+                    {"message": "Agent 执行失败，请稍后重试。"},
+                )
+
+            yield _sse("end", None)
+
+        stream_response = StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+        if session_id is not None:
+            _issue_session_cookie(
+                request,
+                stream_response,
+                session_id,
+            )
+
+        return stream_response
 
     @app.post("/api/prompt/stream")
     async def generate_prompt_stream(
@@ -1416,6 +1773,68 @@ def create_app(
             payload.prompt,
             payload.aspect_ratio,
             True,
+            quota,
+            ip,
+            stamp,
+        )
+
+        return {"job_id": job_id, "status": "pending"}
+
+    @app.post("/api/images/edits/jobs")
+    def create_image_edit_job(
+        payload: DirectImageEditRequest,
+        request: Request,
+    ) -> dict[str, str]:
+        image_skill: ImageGenerationSkillLike | None = (
+            request.app.state.image_skill
+        )
+        if image_skill is None:
+            raise HTTPException(
+                status_code=503,
+                detail="图片生成服务尚未配置",
+            )
+
+        source_path = _resolve_edit_source(
+            payload.image_url,
+            Path(request.app.state.image_output_dir),
+        )
+        mask_bytes = _decode_edit_mask(payload.mask_data_url)
+        settings = request.app.state.settings
+
+        if settings is not None:
+            free_gb = disk_free_bytes(settings.data_dir) / 1e9
+
+            if free_gb < settings.min_free_disk_gb:
+                raise HTTPException(
+                    status_code=503,
+                    detail="存储空间不足，暂时无法修改图片。",
+                )
+
+        ip = DemoGuard.client_ip(request)
+        quota: ImageQuota = request.app.state.image_quota
+        stamp = quota.reserve(ip)
+
+        if stamp is None:
+            raise HTTPException(
+                status_code=429,
+                detail="图片修改排队已满或小时配额用完，请稍后再试。",
+            )
+
+        job_id = uuid4().hex
+        now = time.monotonic()
+
+        with IMAGE_JOBS_LOCK:
+            _prune_image_jobs(now)
+            IMAGE_JOBS[job_id] = ImageJob(created_at=now)
+
+        request.app.state.image_executor.submit(
+            _run_image_edit_job_with_quota,
+            job_id,
+            image_skill,
+            payload.prompt,
+            source_path,
+            mask_bytes,
+            payload.aspect_ratio,
             quota,
             ip,
             stamp,

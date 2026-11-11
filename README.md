@@ -14,6 +14,7 @@
 - Tavily 联网搜索与网页内容抓取
 - 提示词改写、合规泛化与直接生图
 - OpenAI-compatible 图片生成中转
+- 完成图片支持下载、复制提示词、区域标记与局部重绘
 - 图片元数据持久化、精确缓存和过期清理
 - 任务级多轮对话历史
 - 较早对话摘要 + 最近消息的滚动上下文压缩
@@ -71,6 +72,31 @@
   -> 仍无结果则提示手动添加
 ```
 
+### 标准 Agent 模式
+
+新增 `/api/agent` 入口，使用有界、结构化的 ReAct 循环：
+
+```text
+planner
+  -> tool_executor
+  -> observer
+  -> evaluator
+  -> planner
+  -> finalizer
+```
+
+Planner 每轮通过结构化输出选择一个动作和工具。工具调用受白名单、最大步骤数和
+Checkpoint 约束，不会执行任意代码。当前注册工具包括：
+
+- `generate_prompt`
+- `rewrite_prompt`
+- `generate_image`
+- `get_conversation_history`
+- `add_prompt`
+
+运行状态使用 `langgraph-checkpoint-sqlite` 持久化到
+`data/agent/checkpoints.sqlite3`。
+
 ### 提示词修改
 
 涉及润色、缩短、翻译、去版权风险或替换元素的请求会直接进入独立改写链，
@@ -104,6 +130,7 @@
 
 ```text
 src/prompt_search_agent/
+  agent/         有界 ReAct Agent、Planner、Tool Registry、Checkpoint
   chains/        LangChain 提示词与结构化输出链
   graph/         LangGraph 工作流
   images/        图片 Provider 与结果模型
@@ -142,6 +169,8 @@ IMAGE_RETENTION_DAYS=7
 本机开发只需上面这些。要暴露到公网，必须再配置：
 
 ```env
+# 明确标记公网部署；缺少访问口令或会话密钥时拒绝启动
+PUBLIC_MODE=true
 # 访问口令：不配置则接口完全无鉴权，仅限本机
 DEMO_ACCESS_CODE=换成你的口令
 # 会话签名密钥，生成方式：openssl rand -hex 32
@@ -183,7 +212,7 @@ node --check src/prompt_search_agent/web/app.js
 当前测试状态：
 
 ```text
-77 passed
+201 passed
 Ruff: passed
 Pyright: 0 errors
 JavaScript syntax: passed
@@ -194,14 +223,16 @@ JavaScript syntax: passed
 | 机制 | 行为 |
 |---|---|
 | 访问口令 | 业务接口需 `Authorization: Bearer <DEMO_ACCESS_CODE>`，缺失或错误返回 401 |
-| IP 限流 | 每 IP 每小时 `RATE_LIMIT_PER_IP_PER_HOUR` 次，超出返回 429 |
+| 认证失败限流 | 同一 IP 连续输错口令达到阈值后返回 429，避免暴力尝试 |
+| 写请求限流 | 每个 IP 每小时 `RATE_LIMIT_PER_IP_PER_HOUR` 次写操作，超出返回 429；状态轮询不计入 |
 | 日配额 | 全局每天 `DAILY_REQUEST_CAP` 次，超出返回 503 |
-| 会话签名 | thread_id 由 `THREAD_SECRET` 做 HMAC 签名，读写历史必须带 `x-thread-token`，否则 403 |
+| 会话身份 | 服务端保存 Session，浏览器使用签名 HttpOnly Cookie；HTTPS 下自动启用 Secure |
+| 历史权限 | 读写历史时校验 thread_id 是否属于当前 Session，越权返回 403 |
 | 只读库 | `DEMO_READONLY_LIBRARY=true` 时关闭 `/api/prompts` 写入，返回 403 |
-| 错误收敛 | 对外只返回 `{code, message, trace_id}`，异常原文只进服务端日志 |
-| 降级启动 | 密钥缺失或数据库初始化失败时进程照常启动，接口返回 503 并在 `/api/health` 报 `degraded` |
+| 公网 fail-closed | `PUBLIC_MODE=true` 时缺少访问口令或使用默认 `THREAD_SECRET` 将直接拒绝启动 |
+| 降级启动 | 非公网模式下依赖不可用时服务可降级启动，接口返回 503 并在 `/api/health` 报 `degraded` |
 
-`/`、`/api/health`、`/static/*` 不受口令与限流影响，便于探活与加载页面。
+`/`、`/api/health`、`/api/version`、`/metrics`、`/static/*` 不受口令与限流影响，便于探活、监控与加载页面。
 
 > ⚠️ 限流与生图任务都是**进程内内存态**，因此部署必须保持单 worker（`--workers 1`）。
 
@@ -223,6 +254,7 @@ JavaScript syntax: passed
 |---|---|---|
 | 异步执行 | `to_thread` + `CapacityLimiter` | 生成任务在线程里跑，并发上限 `MAX_CONCURRENT_GENERATIONS`（默认 8），超出排队而非打满线程池 |
 | SSE 流式 | `POST /api/prompt/stream` | 事件序列 `open → stage(intent/retrieval) → token* → result`，失败推 `error`，心跳 5s |
+| Agent 循环 | `planner → executor → evaluator` | 有界结构化 ReAct，工具白名单与 SQLite Checkpoint |
 | 静态指纹 | `webassets.AssetManifest` | 启动时按内容哈希改写 `index.html`；命中指纹回 `immutable`，未命中回 7 天 |
 | 发布回滚 | `deploy/release.sh` / `deploy/rollback.sh` | releases 目录 + `current`/`previous` 符号链接，起不来自动退回 |
 
@@ -253,10 +285,12 @@ L2 会绕过缓存（命中缓存一律报 `compose`，会把真实路由抹平�
 
 | 接口 | 用途 |
 |---|---|
+| `POST /api/agent` | 有界 ReAct Agent 入口，动态选择检索、改写、生图和历史工具 |
 | `POST /api/prompt` | 一次性生成，给脚本和第三方调用 |
 | `POST /api/prompt/stream` | SSE 流式生成，前端使用 |
 | `POST /api/images/jobs` → `GET /api/images/jobs/{id}` | 异步生图 |
-| `DELETE /api/history/{thread_id}` | 删除会话全部历史（需 `x-thread-token`） |
+| `POST /api/images/edits/jobs` | 基于原图和 PNG 蒙版的异步区域重绘 |
+| `DELETE /api/history/{thread_id}` | 删除当前 HttpOnly Cookie 会话拥有的对话历史 |
 | `GET /api/version` | 当前版本、commit 与 `schema_version`，发布/回滚后核对 |
 | `GET /metrics` | Prometheus 文本格式指标 |
 

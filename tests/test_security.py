@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
@@ -90,6 +91,20 @@ def test_wrong_code_is_rejected(tmp_path: Path) -> None:
         assert post_prompt(client, token="wrong-code") == 401
 
 
+def test_failed_auth_attempts_are_rate_limited(
+    tmp_path: Path,
+) -> None:
+    settings = build_settings(tmp_path, per_ip_limit=2)
+
+    with build_client(settings) as client:
+        statuses = [
+            post_prompt(client, token="wrong-code")
+            for _ in range(3)
+        ]
+
+    assert statuses == [401, 401, 429]
+
+
 def test_correct_code_passes(tmp_path: Path) -> None:
     settings = build_settings(tmp_path)
 
@@ -134,6 +149,66 @@ def test_daily_quota_triggers_503(tmp_path: Path) -> None:
         assert post_prompt(client) == 200
         assert post_prompt(client) == 200
         assert post_prompt(client) == 503
+
+
+def test_polling_reads_do_not_consume_write_rate_limit(
+    tmp_path: Path,
+) -> None:
+    settings = build_settings(tmp_path, per_ip_limit=2)
+    headers = {"Authorization": f"Bearer {ACCESS_CODE}"}
+
+    with build_client(settings) as client:
+        reads = [
+            client.get("/api/session", headers=headers).status_code
+            for _ in range(5)
+        ]
+        writes = [
+            post_prompt(client)
+            for _ in range(3)
+        ]
+
+    assert reads == [200, 200, 200, 200, 200]
+    assert writes == [200, 200, 429]
+
+
+def test_session_cookie_is_secure_behind_https_proxy(
+    tmp_path: Path,
+) -> None:
+    settings = build_settings(tmp_path)
+    settings = settings.model_copy(update={"public_mode": True})
+
+    with build_client(settings) as client:
+        response = client.get(
+            "/api/session",
+            headers={
+                "Authorization": f"Bearer {ACCESS_CODE}",
+                "x-forwarded-proto": "https",
+            },
+        )
+
+    cookie = response.headers.get("set-cookie", "").lower()
+    assert "secure" in cookie
+    assert "httponly" in cookie
+
+
+def test_public_mode_requires_access_code() -> None:
+    settings = Settings(
+        public_mode=True,
+        thread_secret=SecretStr("custom-secret"),
+    )
+
+    with pytest.raises(RuntimeError, match="DEMO_ACCESS_CODE"):
+        settings.assert_runtime_safe()
+
+
+def test_public_mode_requires_custom_thread_secret() -> None:
+    settings = Settings(
+        public_mode=True,
+        demo_access_code=SecretStr(ACCESS_CODE),
+    )
+
+    with pytest.raises(RuntimeError, match="THREAD_SECRET"):
+        settings.assert_runtime_safe()
 
 
 def create_conversation(client, tool: str = "prompt") -> str:

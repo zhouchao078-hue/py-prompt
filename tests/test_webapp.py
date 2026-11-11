@@ -1,10 +1,13 @@
 import re
 import time
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from prompt_search_agent.agent import AgentServiceResult
 from prompt_search_agent.config import Settings
 from prompt_search_agent.images import ImageGenerationResult
 from prompt_search_agent.services.prompt_service import (
@@ -55,6 +58,9 @@ class FakeImageSkill:
     def __init__(self, result: ImageGenerationResult) -> None:
         self.result = result
         self.calls: list[tuple[str, str | None, bool]] = []
+        self.edit_calls: list[
+            tuple[str, Path, bytes, str | None, bool]
+        ] = []
 
     def invoke(
         self,
@@ -64,6 +70,74 @@ class FakeImageSkill:
     ) -> ImageGenerationResult:
         self.calls.append((prompt, aspect_ratio, use_cache))
         return self.result
+
+    def edit(
+        self,
+        prompt: str,
+        image_path: Path,
+        mask_bytes: bytes,
+        aspect_ratio: str | None = None,
+        use_cache: bool = True,
+    ) -> ImageGenerationResult:
+        self.edit_calls.append(
+            (
+                prompt,
+                image_path,
+                mask_bytes,
+                aspect_ratio,
+                use_cache,
+            )
+        )
+        return self.result.model_copy(update={"prompt": prompt})
+
+
+class FakeAgentService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def run(
+        self,
+        user_goal: str,
+        thread_id: str,
+    ) -> AgentServiceResult:
+        self.calls.append((user_goal, thread_id))
+        return self._result(thread_id)
+
+    def stream(
+        self,
+        user_goal: str,
+        thread_id: str,
+    ) -> Iterator[dict[str, Any]]:
+        self.calls.append((user_goal, thread_id))
+        yield {
+            "event": "stage",
+            "phase": "planning",
+            "steps": 0,
+        }
+        yield {
+            "event": "step",
+            "phase": "plan",
+            "action": "call_tool",
+            "tool_name": "generate_prompt",
+            "reason": "Need to generate a prompt.",
+            "steps": 1,
+        }
+        yield {
+            "event": "result",
+            "data": self._result(thread_id).model_dump(),
+        }
+
+    @staticmethod
+    def _result(thread_id: str) -> AgentServiceResult:
+        return AgentServiceResult(
+            run_id="agent-run",
+            thread_id=thread_id,
+            status="completed",
+            response_type="prompt",
+            prompt="agent generated prompt",
+            tool_names=["generate_prompt"],
+            steps=1,
+        )
 
 
 def test_prompt_endpoint_returns_prompt() -> None:
@@ -88,6 +162,76 @@ def test_prompt_endpoint_returns_prompt() -> None:
         "sources": [],
     }
     assert service.queries == ["雪夜里的白猫"]
+
+
+def test_agent_endpoint_uses_agent_service() -> None:
+    prompt_service = FakePromptService()
+    agent_service = FakeAgentService()
+    app = create_app(
+        lambda: prompt_service,
+        agent_service_factory=lambda: agent_service,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/agent",
+            json={"message": "帮我生成提示词"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["response_type"] == "prompt"
+    assert response.json()["prompt"] == "agent generated prompt"
+    assert response.json()["tool_names"] == ["generate_prompt"]
+    assert agent_service.calls[0][0] == "帮我生成提示词"
+    assert prompt_service.queries == []
+
+
+def test_agent_stream_exposes_run_trace_events() -> None:
+    agent_service = FakeAgentService()
+    app = create_app(
+        lambda: FakePromptService(),
+        agent_service_factory=lambda: agent_service,
+    )
+
+    with TestClient(app) as client, client.stream(
+        "POST",
+        "/api/agent/stream",
+        json={"message": "帮我生成提示词"},
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: open" in body
+    assert "event: agent" in body
+    assert '"event": "stage"' in body
+    assert '"event": "step"' in body
+    assert '"phase": "plan"' in body
+    assert '"event": "result"' in body
+    assert '"response_type": "prompt"' in body
+    assert "event: end" in body
+    assert len(agent_service.calls) == 1
+    assert agent_service.calls[0][0] == "帮我生成提示词"
+
+
+def test_agent_page_contains_live_progress_mounts() -> None:
+    app = create_app(
+        lambda: FakePromptService(),
+        agent_service_factory=lambda: FakeAgentService(),
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'id="agentLiveStatus"' in response.text
+    assert 'id="agentTraceStatus"' in response.text
+    assert 'id="agentTraceDetail"' in response.text
+    assert 'id="agentProgressBar"' in response.text
+    assert 'id="previewImageActions"' in response.text
+    assert 'id="agentImageActions"' in response.text
+    assert 'id="imageEditorDialog"' in response.text
+    assert 'id="imageEditorCanvas"' in response.text
 
 
 def test_media_endpoint_exposes_provider_status() -> None:
@@ -357,6 +501,95 @@ def test_image_job_renders_in_background(tmp_path: Path) -> None:
     assert job["status"] == "done"
     assert job["image_url"] == "/api/images/job.png"
     assert missing.status_code == 404
+
+
+def test_image_edit_job_uses_source_and_mask(tmp_path: Path) -> None:
+    source_path = tmp_path / "source.png"
+    source_path.write_bytes(b"source-image")
+    edited_path = tmp_path / "edited.png"
+    edited_path.write_bytes(b"edited-image")
+    image_result = ImageGenerationResult(
+        image_id="edited",
+        file_name="edited.png",
+        file_path=edited_path,
+        prompt="replace the marked area",
+        provider="openai-compatible",
+        model="image-model",
+        size="1024x1536",
+    )
+    image_skill = FakeImageSkill(image_result)
+    app = create_app(
+        lambda: FakePromptService(),
+        image_skill_factory=lambda: image_skill,
+        image_output_dir=tmp_path,
+    )
+    mask_data_url = (
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
+    )
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/images/edits/jobs",
+            json={
+                "prompt": "replace the marked area",
+                "image_url": "/api/images/source.png",
+                "mask_data_url": mask_data_url,
+                "aspect_ratio": "2:3",
+            },
+        )
+        job_id = created.json()["job_id"]
+        job: dict = {"status": "pending"}
+
+        for _ in range(60):
+            job = client.get(f"/api/images/jobs/{job_id}").json()
+
+            if job["status"] != "pending":
+                break
+
+            time.sleep(0.05)
+
+    assert created.status_code == 200
+    assert job["status"] == "done"
+    assert job["image_url"] == "/api/images/edited.png"
+    assert len(image_skill.edit_calls) == 1
+    prompt, image_path, mask_bytes, ratio, use_cache = (
+        image_skill.edit_calls[0]
+    )
+    assert prompt == "replace the marked area"
+    assert image_path == source_path.resolve()
+    assert mask_bytes.startswith(b"\x89PNG")
+    assert ratio == "2:3"
+    assert use_cache is True
+
+
+def test_image_edit_rejects_source_outside_output_dir(
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        lambda: FakePromptService(),
+        image_skill_factory=lambda: FakeImageSkill(
+            build_image_result(tmp_path, "unused.png")
+        ),
+        image_output_dir=tmp_path,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/images/edits/jobs",
+            json={
+                "prompt": "change the marked area",
+                "image_url": "/api/images/../secret.png",
+                "mask_data_url": (
+                    "data:image/png;base64,"
+                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
+                ),
+                "aspect_ratio": "1:1",
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "原图文件名无效。"
 
 
 def test_prompt_stream_emits_stage_and_result() -> None:

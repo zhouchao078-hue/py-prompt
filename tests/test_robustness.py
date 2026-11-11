@@ -48,12 +48,32 @@ class FailingImageSkill:
     def invoke(self, prompt, aspect_ratio=None, use_cache=True):
         raise ImageGenerationError("provider down")
 
+    def edit(
+        self,
+        prompt,
+        image_path,
+        mask_bytes,
+        aspect_ratio=None,
+        use_cache=True,
+    ):
+        raise ImageGenerationError("provider down")
+
 
 class FakeImageSkill:
     def __init__(self, result: ImageGenerationResult) -> None:
         self.result = result
 
     def invoke(self, prompt, aspect_ratio=None, use_cache=True):
+        return self.result
+
+    def edit(
+        self,
+        prompt,
+        image_path,
+        mask_bytes,
+        aspect_ratio=None,
+        use_cache=True,
+    ):
         return self.result
 
 
@@ -63,6 +83,7 @@ def settings_for(tmp_path: Path, **overrides) -> Settings:
         "prompt_db_path": tmp_path / "robust.sqlite3",
         "data_dir": tmp_path,
         "demo_access_code": SecretStr(ACCESS_CODE),
+        "thread_secret": SecretStr("robust-thread-secret"),
     }
     defaults.update(overrides)
     settings = Settings(**defaults)

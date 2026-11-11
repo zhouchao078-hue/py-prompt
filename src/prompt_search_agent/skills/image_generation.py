@@ -1,11 +1,13 @@
 """Image generation skill."""
 
+import hashlib
 import re
 from collections.abc import Mapping
 from pathlib import Path
 
 from prompt_search_agent.config import Settings
 from prompt_search_agent.images import (
+    ImageEditRequest,
     ImageGenerationError,
     ImageGenerationRequest,
     ImageGenerationResult,
@@ -91,6 +93,62 @@ class ImageGenerationSkill:
         result = self.provider.generate(
             ImageGenerationRequest(
                 prompt=normalized_prompt,
+                size=size,
+            )
+        )
+
+        if self.db_path is not None:
+            previous_path = save_generated_image(
+                self.db_path,
+                cache_key,
+                result,
+                self.retention_days,
+                self.busy_timeout_ms,
+            )
+            if previous_path is not None:
+                try:
+                    previous_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+        return result
+
+    def edit(
+        self,
+        prompt: str,
+        image_path: Path,
+        mask_bytes: bytes,
+        aspect_ratio: str | None = None,
+        use_cache: bool = True,
+    ) -> ImageGenerationResult:
+        normalized_prompt = normalize_image_prompt(prompt)
+        normalized_ratio = aspect_ratio or "1:1"
+        size = self.size_by_aspect_ratio.get(
+            normalized_ratio,
+            self.size_by_aspect_ratio["1:1"],
+        )
+        mask_hash = hashlib.sha256(mask_bytes).hexdigest()
+        cache_key = build_generated_image_cache_key(
+            normalized_prompt,
+            self.cache_scope,
+            f"edit:{image_path.name}:{mask_hash}",
+            size,
+        )
+
+        if self.db_path is not None and use_cache:
+            cached = get_cached_generated_image(
+                self.db_path,
+                cache_key,
+                self.busy_timeout_ms,
+            )
+            if cached is not None and cached.file_path.is_file():
+                return cached
+
+        result = self.provider.edit(
+            ImageEditRequest(
+                prompt=normalized_prompt,
+                image_path=image_path,
+                mask_bytes=mask_bytes,
                 size=size,
             )
         )

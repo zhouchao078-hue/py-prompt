@@ -64,6 +64,27 @@
           </span>
           <span class="tool-index">02</span>
         </button>
+
+        <button
+          class="tool-item"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="panel-agent"
+          data-tool="agent"
+        >
+          <span class="tool-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path d="M12 3.5 14 9l5.5 2-5.5 2-2 5.5-2-5.5L4.5 11 10 9l2-5.5Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+              <path d="M18.5 16.5 19.5 19l2.5 1-2.5 1-1 2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </span>
+          <span class="tool-copy">
+            <strong>任务 Agent</strong>
+            <small>规划 / 工具</small>
+          </span>
+          <span class="tool-index">03</span>
+        </button>
       </nav>
 
       <div class="rail-footer">
@@ -249,6 +270,27 @@
                   <div class="preview-image-wrap" id="previewImageWrap" hidden>
                     <img id="previewImage" alt="" />
                   </div>
+                  <div class="image-actions" id="previewImageActions" hidden>
+                    <button class="image-action" id="downloadPreviewImage" type="button">
+                      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="M12 4v10m0 0 4-4m-4 4-4-4M5 19h14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                      下载
+                    </button>
+                    <button class="image-action" id="copyPreviewPrompt" type="button">
+                      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <rect x="8" y="8" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.7"/>
+                        <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke="currentColor" stroke-width="1.7"/>
+                      </svg>
+                      复制提示词
+                    </button>
+                    <button class="image-action image-action--primary" id="editPreviewImage" type="button">
+                      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path d="m14.5 5.5 4 4M5 19l3.8-.8L19 8a1.8 1.8 0 0 0 0-2.6l-.4-.4a1.8 1.8 0 0 0-2.6 0L5.8 15.2 5 19Z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                      标记修改
+                    </button>
+                  </div>
                   <p id="previewPrompt"></p>
                 </div>
               </div>
@@ -293,9 +335,227 @@
             </section>
           </div>
         </section>
+
+        <section
+          class="tool-panel"
+          id="panel-agent"
+          role="tabpanel"
+          aria-labelledby="agent-tool"
+          hidden
+        >
+          <div class="prompt-layout agent-layout">
+            <section class="conversation-shell" aria-label="Agent 对话">
+              <div class="conversation-intro agent-intro">
+                <span class="eyebrow">BOUNDED REACT</span>
+                <h2>把目标交给 Agent，<br>让它选择下一步。</h2>
+                <p>规划、调用工具、观察结果，直到任务完成或需要你补充。</p>
+              </div>
+
+              <div class="message-stream" id="agentMessages" role="log" aria-live="polite">
+                <article class="message message--assistant">
+                  <div class="message-meta">
+                    <span class="message-mark" aria-hidden="true"></span>
+                    <span>Task Agent</span>
+                    <span class="message-state">READY</span>
+                  </div>
+                  <div class="message-body">
+                    描述一个需要多步完成的目标。
+                  </div>
+                </article>
+              </div>
+
+              <div class="prompt-examples" aria-label="Agent 示例">
+                <button type="button" class="example-chip" data-agent-example="帮我检索雪山橘猫提示词，没有就联网，然后生成一张 2:3 图片">
+                  检索并生图
+                </button>
+                <button type="button" class="example-chip" data-agent-example="读取最近对话，把上一版提示词改成没有版权风险的版本">
+                  改写上一版
+                </button>
+                <button type="button" class="example-chip" data-agent-example="读取我的对话历史，总结我已经做过哪些创作">
+                  总结历史
+                </button>
+              </div>
+
+              <form class="composer" id="agentForm">
+                <label class="sr-only" for="agentInput">输入 Agent 目标</label>
+                <textarea
+                  id="agentInput"
+                  class="composer-input"
+                  rows="2"
+                  placeholder="例如：查找合适的提示词并生成图片..."
+                ></textarea>
+                <div class="composer-actions">
+                  <span class="composer-hint">最多 8 个规划步骤</span>
+                  <button class="send-button" type="submit" aria-label="运行 Agent">
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <path d="M4 12h15M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  </button>
+                </div>
+              </form>
+            </section>
+
+            <aside class="workflow-aside agent-trace" aria-label="Agent 运行轨迹">
+              <div class="aside-section">
+                <span class="aside-label">RUN TRACE</span>
+                <div
+                  class="agent-live-status"
+                  id="agentLiveStatus"
+                  data-state="idle"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span class="agent-live-orbit" aria-hidden="true">
+                    <span class="agent-live-dot"></span>
+                  </span>
+                  <div class="agent-live-copy">
+                    <span>CURRENT STEP</span>
+                    <strong id="agentTraceStatus">等待任务</strong>
+                    <p id="agentTraceDetail">提交目标后，这里会实时显示 Agent 正在做什么。</p>
+                  </div>
+                  <span class="agent-trace-steps" id="agentTraceSteps">0 STEPS</span>
+                </div>
+                <div class="agent-progress-track" aria-hidden="true">
+                  <span id="agentProgressBar"></span>
+                </div>
+                <div class="agent-trace-block">
+                  <span>DECISIONS</span>
+                  <ol id="agentDecisions"></ol>
+                </div>
+                <div class="agent-trace-block">
+                  <span>TOOLS</span>
+                  <ol id="agentTools"></ol>
+                </div>
+              </div>
+
+              <div class="agent-result" id="agentResult" hidden>
+                <img id="agentResultImage" alt="" hidden />
+                <div class="image-actions" id="agentImageActions" hidden>
+                  <button class="image-action" id="downloadAgentImage" type="button">
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <path d="M12 4v10m0 0 4-4m-4 4-4-4M5 19h14" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    下载
+                  </button>
+                  <button class="image-action" id="copyAgentPrompt" type="button">
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <rect x="8" y="8" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.7"/>
+                      <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" stroke="currentColor" stroke-width="1.7"/>
+                    </svg>
+                    复制提示词
+                  </button>
+                  <button class="image-action image-action--primary" id="editAgentImage" type="button">
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <path d="m14.5 5.5 4 4M5 19l3.8-.8L19 8a1.8 1.8 0 0 0 0-2.6l-.4-.4a1.8 1.8 0 0 0-2.6 0L5.8 15.2 5 19Z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    标记修改
+                  </button>
+                </div>
+                <p id="agentResultText"></p>
+              </div>
+
+              <div class="aside-quote">
+                <span class="quote-line"></span>
+                <p>Agent 的自由来自选择，而不是无限循环。</p>
+              </div>
+            </aside>
+          </div>
+        </section>
       </div>
     </main>
   </div>
+
+  <dialog class="image-editor-dialog" id="imageEditorDialog" aria-labelledby="imageEditorTitle">
+    <div class="image-editor-panel">
+      <header class="image-editor-header">
+        <div>
+          <span class="eyebrow">REGION EDIT</span>
+          <h2 id="imageEditorTitle">标记需要修改的区域</h2>
+          <p>在图片上涂抹要重绘的位置，再用一句话描述修改内容。</p>
+        </div>
+        <button class="icon-button" id="closeImageEditor" type="button" aria-label="关闭图片编辑器">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="m6 6 12 12M18 6 6 18" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </header>
+
+      <div class="image-editor-workspace">
+        <div class="image-editor-canvas-shell" id="imageEditorCanvasShell">
+          <img id="imageEditorSource" alt="" />
+          <canvas
+            id="imageEditorCanvas"
+            aria-label="在图片上标记需要修改的区域"
+            tabindex="0"
+          ></canvas>
+        </div>
+
+        <aside class="image-editor-controls">
+          <div>
+            <span class="aside-label">BRUSH</span>
+            <div class="image-editor-tools" role="group" aria-label="标记工具">
+              <button
+                class="editor-tool is-active"
+                type="button"
+                data-editor-tool="brush"
+                aria-label="画笔"
+                aria-pressed="true"
+                title="画笔"
+              >
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="m14.5 5.5 4 4M5 19l3.8-.8L19 8a1.8 1.8 0 0 0 0-2.6l-.4-.4a1.8 1.8 0 0 0-2.6 0L5.8 15.2 5 19Z" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+              <button
+                class="editor-tool"
+                type="button"
+                data-editor-tool="eraser"
+                aria-label="橡皮擦"
+                aria-pressed="false"
+                title="橡皮擦"
+              >
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="m7 17 8.8-8.8a2 2 0 0 1 2.8 0l1.2 1.2a2 2 0 0 1 0 2.8L12 20H8l-3-3h2Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                  <path d="m11 13 5 5" stroke="currentColor" stroke-width="1.7"/>
+                </svg>
+              </button>
+              <button class="editor-tool" id="undoImageMark" type="button" aria-label="撤销上一笔" title="撤销上一笔">
+                <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M9 8H5v-4M5.5 8A7 7 0 1 1 7 17" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+              <button class="editor-tool editor-tool--text" id="clearImageMarks" type="button">清除</button>
+            </div>
+          </div>
+
+          <label class="image-editor-size">
+            <span>画笔大小 <strong id="imageBrushSizeLabel">28 px</strong></span>
+            <input id="imageBrushSize" type="range" min="10" max="64" value="28" step="2" />
+          </label>
+
+          <label class="image-editor-instruction">
+            <span>修改要求</span>
+            <textarea
+              id="imageEditInstruction"
+              rows="5"
+              maxlength="2000"
+              placeholder="例如：把标记区域里的衣服改成红色针织外套，保持原有光线和姿势。"
+            ></textarea>
+          </label>
+
+          <p class="image-editor-note">只修改涂抹区域，未标记部分会被要求尽量保持不变。</p>
+        </aside>
+      </div>
+
+      <footer class="image-editor-footer">
+        <span id="imageEditorStatus" role="status" aria-live="polite">尚未标记区域</span>
+        <div>
+          <button class="dialog-button dialog-button--secondary" id="cancelImageEdit" type="button">取消</button>
+          <button class="dialog-button dialog-button--primary" id="applyImageEdit" type="button">应用局部修改</button>
+        </div>
+      </footer>
+    </div>
+  </dialog>
 
   <dialog class="prompt-dialog" id="promptDialog" aria-labelledby="promptDialogTitle">
     <form class="prompt-dialog__panel" id="addPromptForm">

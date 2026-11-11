@@ -32,12 +32,23 @@ class FakeImageSkill:
     def invoke(self, prompt, aspect_ratio=None, use_cache=True):
         return self.result
 
+    def edit(
+        self,
+        prompt,
+        image_path,
+        mask_bytes,
+        aspect_ratio=None,
+        use_cache=True,
+    ):
+        return self.result
+
 
 def settings_for(tmp_path: Path, **overrides) -> Settings:
     defaults: dict = {
         "deepseek_api_key": SecretStr("test-key"),
         "prompt_db_path": tmp_path / "boundary.sqlite3",
         "data_dir": tmp_path,
+        "thread_secret": SecretStr("boundary-thread-secret"),
     }
     defaults.update(overrides)
     settings = Settings(**defaults)

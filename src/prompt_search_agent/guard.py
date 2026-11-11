@@ -25,6 +25,7 @@ LOGGER = logging.getLogger(__name__)
 
 RATE_WINDOW_SECONDS = 3600.0
 TRACKED_IPS_LIMIT = 4096
+RATE_LIMITED_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 EXEMPT_PATHS = frozenset(
     {"/", "/api/health", "/api/version", "/metrics", "/favicon.svg"}
 )
@@ -46,6 +47,7 @@ class DemoGuard:
         self.per_ip_limit = per_ip_limit
         self.daily_cap = daily_cap
         self._hits: dict[str, deque[float]] = defaultdict(deque)
+        self._auth_failures: dict[str, deque[float]] = defaultdict(deque)
         self._day = ""
         self._day_count = 0
 
@@ -99,6 +101,30 @@ class DemoGuard:
 
         return None
 
+    def _check_auth_failure_limit(
+        self,
+        ip: str,
+        now: float,
+    ) -> Response | None:
+        if len(self._auth_failures) > TRACKED_IPS_LIMIT:
+            self._sweep(now)
+
+        failures = self._auth_failures[ip]
+
+        while failures and now - failures[0] > RATE_WINDOW_SECONDS:
+            failures.popleft()
+
+        if len(failures) >= self.per_ip_limit:
+            return JSONResponse(
+                status_code=429,
+                content={
+                    "code": "rate_limited",
+                    "message": "认证失败次数过多，请稍后再试。",
+                },
+            )
+
+        return None
+
     def _sweep(self, now: float) -> None:
         """被扫段时 IP 表会无限膨胀，定期清掉过期条目。"""
         stale = [
@@ -110,6 +136,15 @@ class DemoGuard:
         for ip in stale:
             del self._hits[ip]
 
+        stale_auth = [
+            ip
+            for ip, failures in self._auth_failures.items()
+            if not failures or now - failures[-1] > RATE_WINDOW_SECONDS
+        ]
+
+        for ip in stale_auth:
+            del self._auth_failures[ip]
+
     def check(self, request: Request, trace_id: str) -> Response | None:
         """返回 None 表示放行，否则返回拒绝响应。"""
         path = request.url.path
@@ -118,24 +153,23 @@ class DemoGuard:
             return None
 
         now = time.monotonic()
-
-        rejection = self._check_daily_quota(time.strftime("%Y-%m-%d"))
-
-        if rejection is not None:
-            self._log_rejection(request, trace_id, rejection, "配额耗尽")
-            return rejection
-
         ip = self.client_ip(request)
-        rejection = self._check_rate_limit(ip, now)
+        rejection = self._check_auth_failure_limit(ip, now)
 
         if rejection is not None:
-            self._log_rejection(request, trace_id, rejection, f"限流 {ip}")
+            self._log_rejection(
+                request,
+                trace_id,
+                rejection,
+                f"认证失败过多 {ip}",
+            )
             return rejection
 
         token = request.headers.get("authorization", "")
         token = token.removeprefix("Bearer ").strip()
 
         if not hmac.compare_digest(token, self.access_code):
+            self._auth_failures[ip].append(now)
             response = JSONResponse(
                 status_code=401,
                 content={
@@ -145,6 +179,21 @@ class DemoGuard:
             )
             self._log_rejection(request, trace_id, response, f"口令错误 {ip}")
             return response
+
+        if request.method not in RATE_LIMITED_METHODS:
+            return None
+
+        rejection = self._check_daily_quota(time.strftime("%Y-%m-%d"))
+
+        if rejection is not None:
+            self._log_rejection(request, trace_id, rejection, "配额耗尽")
+            return rejection
+
+        rejection = self._check_rate_limit(ip, now)
+
+        if rejection is not None:
+            self._log_rejection(request, trace_id, rejection, f"限流 {ip}")
+            return rejection
 
         self._hits[ip].append(now)
         self._day_count += 1

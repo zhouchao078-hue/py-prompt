@@ -4,14 +4,21 @@ const state = {
   busy: {
     prompt: false,
     media: false,
+    agent: false,
   },
   threadIds: {
     prompt: "",
     media: "",
+    agent: "",
   },
   threadTokens: {
     prompt: "",
     media: "",
+    agent: "",
+  },
+  imageContexts: {
+    media: null,
+    agent: null,
   },
 };
 
@@ -29,6 +36,22 @@ const promptMessages = document.getElementById("promptMessages");
 const mediaForm = document.getElementById("mediaForm");
 const mediaInput = document.getElementById("mediaInput");
 const mediaMessages = document.getElementById("mediaMessages");
+const agentForm = document.getElementById("agentForm");
+const agentInput = document.getElementById("agentInput");
+const agentMessages = document.getElementById("agentMessages");
+const agentLiveStatus = document.getElementById("agentLiveStatus");
+const agentTraceStatus = document.getElementById("agentTraceStatus");
+const agentTraceDetail = document.getElementById("agentTraceDetail");
+const agentTraceSteps = document.getElementById("agentTraceSteps");
+const agentProgressBar = document.getElementById("agentProgressBar");
+const agentDecisions = document.getElementById("agentDecisions");
+const agentTools = document.getElementById("agentTools");
+const agentResult = document.getElementById("agentResult");
+const agentResultImage = document.getElementById("agentResultImage");
+const agentImageActions = document.getElementById("agentImageActions");
+const agentResultText = document.getElementById("agentResultText");
+let agentImageObjectUrl = "";
+let agentPendingToolRow = null;
 const stageTabs = Array.from(document.querySelectorAll(".stage-tab"));
 const aspectRatio = document.getElementById("aspectRatio");
 const previewEmpty = document.getElementById("previewEmpty");
@@ -39,7 +62,44 @@ const previewType = document.getElementById("previewType");
 const previewStatus = document.getElementById("previewStatus");
 const previewImageWrap = document.getElementById("previewImageWrap");
 const previewImage = document.getElementById("previewImage");
+const previewImageActions = document.getElementById("previewImageActions");
 const providerNote = document.getElementById("providerNote");
+let previewObjectUrl = "";
+const downloadPreviewImage = document.getElementById("downloadPreviewImage");
+const copyPreviewPrompt = document.getElementById("copyPreviewPrompt");
+const editPreviewImage = document.getElementById("editPreviewImage");
+const downloadAgentImage = document.getElementById("downloadAgentImage");
+const copyAgentPrompt = document.getElementById("copyAgentPrompt");
+const editAgentImage = document.getElementById("editAgentImage");
+
+const imageEditorDialog = document.getElementById("imageEditorDialog");
+const closeImageEditor = document.getElementById("closeImageEditor");
+const cancelImageEdit = document.getElementById("cancelImageEdit");
+const applyImageEdit = document.getElementById("applyImageEdit");
+const imageEditorSource = document.getElementById("imageEditorSource");
+const imageEditorCanvas = document.getElementById("imageEditorCanvas");
+const imageEditorCanvasShell = document.getElementById(
+  "imageEditorCanvasShell",
+);
+const imageEditorStatus = document.getElementById("imageEditorStatus");
+const imageEditInstruction = document.getElementById(
+  "imageEditInstruction",
+);
+const imageBrushSize = document.getElementById("imageBrushSize");
+const imageBrushSizeLabel = document.getElementById("imageBrushSizeLabel");
+const undoImageMark = document.getElementById("undoImageMark");
+const clearImageMarks = document.getElementById("clearImageMarks");
+const editorTools = Array.from(document.querySelectorAll(".editor-tool[data-editor-tool]"));
+const imageEditorState = {
+  target: "",
+  context: null,
+  tool: "brush",
+  brushSize: 28,
+  strokes: [],
+  activeStroke: null,
+  drawing: false,
+  busy: false,
+};
 const addPromptButton = document.getElementById("addPromptButton");
 const deleteThreadButton = document.getElementById("deleteThreadButton");
 const promptDialog = document.getElementById("promptDialog");
@@ -74,6 +134,10 @@ const toolCopy = {
   media: {
     kicker: "MEDIA STUDIO",
     title: "影像生成",
+  },
+  agent: {
+    kicker: "AGENT STUDIO",
+    title: "任务 Agent",
   },
 };
 
@@ -114,6 +178,154 @@ function requestAccessCode() {
 
   storeAccessToken(entered.trim());
   return true;
+}
+
+function clearPreviewImage() {
+  state.imageContexts.media = null;
+  previewImageActions.hidden = true;
+
+  if (previewObjectUrl) {
+    URL.revokeObjectURL(previewObjectUrl);
+    previewObjectUrl = "";
+  }
+
+  previewImage.removeAttribute("src");
+  previewImage.alt = "";
+}
+
+async function fetchImageBlob(url) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await fetch(url, {
+      headers: authHeaders(),
+    });
+
+    if (
+      response.status === 401
+      && attempt === 0
+      && requestAccessCode()
+    ) {
+      continue;
+    }
+
+    if (!response.ok) {
+      throw new Error("图片加载失败，请刷新后重试。");
+    }
+
+    return response.blob();
+  }
+
+  throw new Error("图片加载失败，请检查访问口令。");
+}
+
+async function setPreviewImage(url, alt) {
+  const blob = await fetchImageBlob(url);
+  clearPreviewImage();
+  previewObjectUrl = URL.createObjectURL(blob);
+  previewImage.src = previewObjectUrl;
+  previewImage.alt = alt;
+}
+
+function messageContainer(tool) {
+  if (tool === "media") {
+    return mediaMessages;
+  }
+
+  return tool === "agent" ? agentMessages : promptMessages;
+}
+
+function formForTool(tool) {
+  if (tool === "media") {
+    return mediaForm;
+  }
+
+  return tool === "agent" ? agentForm : promptForm;
+}
+
+function clearAgentImage() {
+  state.imageContexts.agent = null;
+  agentImageActions.hidden = true;
+
+  if (agentImageObjectUrl) {
+    URL.revokeObjectURL(agentImageObjectUrl);
+    agentImageObjectUrl = "";
+  }
+
+  agentResultImage.removeAttribute("src");
+  agentResultImage.hidden = true;
+  agentResultImage.alt = "";
+}
+
+async function setAgentImage(url, alt) {
+  const blob = await fetchImageBlob(url);
+  clearAgentImage();
+  agentImageObjectUrl = URL.createObjectURL(blob);
+  agentResultImage.src = agentImageObjectUrl;
+  agentResultImage.alt = alt;
+  agentResultImage.hidden = false;
+}
+
+function inferAspectRatio(prompt, fallback = "1:1") {
+  const match = String(prompt || "").match(
+    /--ar\s+(\d+)\s*:\s*(\d+)/i,
+  );
+
+  if (!match) {
+    return fallback;
+  }
+
+  const ratio = `${match[1]}:${match[2]}`;
+  return ["1:1", "3:2", "2:3"].includes(ratio) ? ratio : fallback;
+}
+
+function setImageContext(target, data, objectUrl) {
+  const prompt = data.prompt || "";
+  const context = {
+    imageId: data.image_id || "",
+    imageUrl: data.image_url,
+    objectUrl,
+    prompt,
+    aspectRatio: data.aspect_ratio
+      || inferAspectRatio(prompt, target === "media" ? aspectRatio.value : "1:1"),
+  };
+
+  state.imageContexts[target] = context;
+
+  if (target === "media") {
+    previewImageActions.hidden = false;
+  } else {
+    agentImageActions.hidden = false;
+  }
+
+  return context;
+}
+
+async function downloadImageTarget(target) {
+  const context = state.imageContexts[target];
+
+  if (!context) {
+    return;
+  }
+
+  const blob = await fetchImageBlob(context.imageUrl);
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  const extension = context.imageUrl.split(".").pop() || "png";
+  link.href = objectUrl;
+  link.download = `aigc-${context.imageId || Date.now()}.${extension}`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+}
+
+async function copyPromptForTarget(target) {
+  const prompt = state.imageContexts[target]?.prompt || "";
+
+  if (!prompt) {
+    return;
+  }
+
+  await navigator.clipboard.writeText(prompt);
 }
 
 function loadThreadId(tool) {
@@ -188,7 +400,7 @@ function resetThread(tool) {
   state.threadIds[tool] = "";
   state.threadTokens[tool] = "";
 
-  const container = tool === "prompt" ? promptMessages : mediaMessages;
+  const container = messageContainer(tool);
   container.replaceChildren();
   appendMessage(container, "assistant", "会话已清空，可以重新开始。", {
     stateLabel: "CLEARED",
@@ -232,7 +444,7 @@ function initializeThreadDeletion() {
       await deleteConversation(tool);
     } catch (error) {
       appendMessage(
-        tool === "prompt" ? promptMessages : mediaMessages,
+        messageContainer(tool),
         "error",
         error instanceof Error ? error.message : "删除失败。",
       );
@@ -265,7 +477,11 @@ function switchTool(toolName) {
     // The interface still works when storage is unavailable.
   }
 
-  const activeInput = toolName === "prompt" ? promptInput : mediaInput;
+  const activeInput = toolName === "media"
+    ? mediaInput
+    : toolName === "agent"
+      ? agentInput
+      : promptInput;
   requestAnimationFrame(() => activeInput.focus());
 }
 
@@ -493,7 +709,7 @@ function appendTyping(container, label = "COMPOSING") {
 
 function setBusy(tool, busy) {
   state.busy[tool] = busy;
-  const form = tool === "prompt" ? promptForm : mediaForm;
+  const form = formForTool(tool);
   const button = form.querySelector(".send-button");
   form.classList.toggle("is-busy", busy);
   button.disabled = busy;
@@ -766,7 +982,7 @@ function activateImageMode() {
   });
 }
 
-function renderGeneratedImage(data, fallbackPrompt = "") {
+async function renderGeneratedImage(data, fallbackPrompt = "") {
   previewEmpty.hidden = true;
   previewResult.hidden = false;
   previewResult.classList.add("has-image");
@@ -777,8 +993,11 @@ function renderGeneratedImage(data, fallbackPrompt = "") {
     ? "OPENAI COMPATIBLE · CACHE HIT"
     : "OPENAI COMPATIBLE · GENERATED";
   previewPrompt.textContent = data.prompt || fallbackPrompt;
-  previewImage.src = data.image_url;
-  previewImage.alt = data.prompt || fallbackPrompt || "生成的图片";
+  await setPreviewImage(
+    data.image_url,
+    data.prompt || fallbackPrompt || "生成的图片",
+  );
+  setImageContext("media", data, previewObjectUrl);
 }
 
 async function pollImageJob(jobId) {
@@ -808,6 +1027,365 @@ async function pollImageJob(jobId) {
   throw new Error("图片生成超时，请稍后重试。");
 }
 
+function setImageEditorStatus(message, isError = false) {
+  imageEditorStatus.textContent = message;
+  imageEditorStatus.classList.toggle("is-error", isError);
+}
+
+function setImageEditorTool(tool) {
+  imageEditorState.tool = tool;
+  editorTools.forEach((button) => {
+    const active = button.dataset.editorTool === tool;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
+}
+
+function updateImageEditorAvailability() {
+  const hasMarks = imageEditorState.strokes.some(
+    (stroke) => stroke.tool === "brush" && stroke.points.length > 0,
+  );
+  undoImageMark.disabled = imageEditorState.strokes.length === 0;
+  clearImageMarks.disabled = imageEditorState.strokes.length === 0;
+  applyImageEdit.disabled = imageEditorState.busy || !hasMarks;
+}
+
+function configureImageEditorCanvas() {
+  if (
+    !imageEditorDialog.open
+    || !imageEditorSource.naturalWidth
+    || !imageEditorSource.naturalHeight
+  ) {
+    return;
+  }
+
+  const rect = imageEditorSource.getBoundingClientRect();
+  const pixelRatio = Math.max(1, window.devicePixelRatio || 1);
+  imageEditorCanvas.style.width = `${rect.width}px`;
+  imageEditorCanvas.style.height = `${rect.height}px`;
+  imageEditorCanvas.width = Math.max(1, Math.round(rect.width * pixelRatio));
+  imageEditorCanvas.height = Math.max(1, Math.round(rect.height * pixelRatio));
+  drawImageEditor();
+}
+
+function drawImageEditorStroke(context, stroke, width, height) {
+  if (!stroke.points.length) {
+    return;
+  }
+
+  context.save();
+  context.globalCompositeOperation = stroke.tool === "eraser"
+    ? "destination-out"
+    : "source-over";
+  context.strokeStyle = "rgba(217, 119, 87, 0.62)";
+  context.fillStyle = "rgba(217, 119, 87, 0.62)";
+  context.lineWidth = stroke.brushSize;
+  context.lineCap = "round";
+  context.lineJoin = "round";
+
+  const points = stroke.points.map((point) => ({
+    x: point.x * width,
+    y: point.y * height,
+  }));
+
+  if (points.length === 1) {
+    context.beginPath();
+    context.arc(
+      points[0].x,
+      points[0].y,
+      stroke.brushSize / 2,
+      0,
+      Math.PI * 2,
+    );
+    context.fill();
+  } else {
+    context.beginPath();
+    context.moveTo(points[0].x, points[0].y);
+    points.slice(1).forEach((point) => {
+      context.lineTo(point.x, point.y);
+    });
+    context.stroke();
+  }
+
+  context.restore();
+}
+
+function drawImageEditor() {
+  const context = imageEditorCanvas.getContext("2d");
+  const width = imageEditorCanvas.clientWidth;
+  const height = imageEditorCanvas.clientHeight;
+  const pixelRatio = Math.max(1, window.devicePixelRatio || 1);
+
+  if (!context || !width || !height) {
+    return;
+  }
+
+  context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  context.clearRect(0, 0, width, height);
+  imageEditorState.strokes.forEach((stroke) => {
+    drawImageEditorStroke(context, stroke, width, height);
+  });
+}
+
+function imageEditorPoint(event) {
+  const rect = imageEditorCanvas.getBoundingClientRect();
+
+  return {
+    x: Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)),
+    y: Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)),
+  };
+}
+
+function beginImageMark(event) {
+  if (imageEditorState.busy || event.button !== 0) {
+    return;
+  }
+
+  event.preventDefault();
+  imageEditorState.drawing = true;
+  imageEditorCanvas.setPointerCapture(event.pointerId);
+  imageEditorState.activeStroke = {
+    tool: imageEditorState.tool,
+    brushSize: imageEditorState.brushSize,
+    points: [imageEditorPoint(event)],
+  };
+  imageEditorState.strokes.push(imageEditorState.activeStroke);
+  drawImageEditor();
+  setImageEditorStatus("正在标记修改区域");
+  updateImageEditorAvailability();
+}
+
+function continueImageMark(event) {
+  if (!imageEditorState.drawing || !imageEditorState.activeStroke) {
+    return;
+  }
+
+  event.preventDefault();
+  const point = imageEditorPoint(event);
+  const points = imageEditorState.activeStroke.points;
+  const previous = points[points.length - 1];
+
+  if (Math.hypot(point.x - previous.x, point.y - previous.y) < 0.002) {
+    return;
+  }
+
+  points.push(point);
+  drawImageEditor();
+}
+
+function finishImageMark(event) {
+  if (!imageEditorState.drawing) {
+    return;
+  }
+
+  event.preventDefault();
+  imageEditorState.drawing = false;
+  imageEditorState.activeStroke = null;
+  updateImageEditorAvailability();
+  setImageEditorStatus("区域已标记，填写修改要求后即可应用");
+}
+
+function createImageEditMask() {
+  const naturalWidth = imageEditorSource.naturalWidth;
+  const naturalHeight = imageEditorSource.naturalHeight;
+  const displayRect = imageEditorCanvas.getBoundingClientRect();
+  const maskCanvas = document.createElement("canvas");
+  const context = maskCanvas.getContext("2d");
+
+  if (
+    !context
+    || !naturalWidth
+    || !naturalHeight
+    || !displayRect.width
+    || !displayRect.height
+  ) {
+    throw new Error("图片尚未加载完成。");
+  }
+
+  maskCanvas.width = naturalWidth;
+  maskCanvas.height = naturalHeight;
+  const brushScale = Math.min(naturalWidth, naturalHeight)
+    / Math.min(displayRect.width, displayRect.height);
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, naturalWidth, naturalHeight);
+
+  imageEditorState.strokes.forEach((stroke) => {
+    if (!stroke.points.length) {
+      return;
+    }
+
+    context.save();
+    // OpenAI-compatible masks mark the editable area with transparency.
+    context.globalCompositeOperation = stroke.tool === "eraser"
+      ? "source-over"
+      : "destination-out";
+    context.strokeStyle = "#ffffff";
+    context.fillStyle = "#ffffff";
+    context.lineWidth = Math.max(1, stroke.brushSize * brushScale);
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    const points = stroke.points.map((point) => ({
+      x: point.x * naturalWidth,
+      y: point.y * naturalHeight,
+    }));
+
+    if (points.length === 1) {
+      context.beginPath();
+      context.arc(
+        points[0].x,
+        points[0].y,
+        context.lineWidth / 2,
+        0,
+        Math.PI * 2,
+      );
+      context.fill();
+    } else {
+      context.beginPath();
+      context.moveTo(points[0].x, points[0].y);
+      points.slice(1).forEach((point) => {
+        context.lineTo(point.x, point.y);
+      });
+      context.stroke();
+    }
+
+    context.restore();
+  });
+
+  const pixels = context.getImageData(
+    0,
+    0,
+    naturalWidth,
+    naturalHeight,
+  ).data;
+  let hasEditableArea = false;
+
+  for (let index = 3; index < pixels.length; index += 16) {
+    if (pixels[index] === 0) {
+      hasEditableArea = true;
+      break;
+    }
+  }
+
+  if (!hasEditableArea) {
+    throw new Error("请先标记一个需要修改的区域。");
+  }
+
+  return maskCanvas.toDataURL("image/png");
+}
+
+async function openImageEditor(target) {
+  const context = state.imageContexts[target];
+
+  if (!context) {
+    return;
+  }
+
+  imageEditorState.target = target;
+  imageEditorState.context = context;
+  imageEditorState.strokes = [];
+  imageEditorState.activeStroke = null;
+  imageEditorState.drawing = false;
+  imageEditorState.busy = false;
+  imageEditorState.brushSize = Number(imageBrushSize.value) || 28;
+  imageEditInstruction.value = "";
+  setImageEditorTool("brush");
+  imageBrushSizeLabel.textContent = `${imageEditorState.brushSize} px`;
+  setImageEditorStatus("在图片上涂抹要修改的区域");
+  imageEditorSource.alt = context.prompt || "待编辑图片";
+  imageEditorSource.src = context.objectUrl;
+  imageEditorDialog.showModal();
+
+  try {
+    await imageEditorSource.decode();
+  } catch {
+    // The load event will still size the canvas in browsers without decode().
+  }
+
+  requestAnimationFrame(() => {
+    configureImageEditorCanvas();
+    updateImageEditorAvailability();
+  });
+}
+
+function closeImageEditorDialog() {
+  if (!imageEditorState.busy) {
+    imageEditorDialog.close();
+  }
+}
+
+async function applyImageEditorChanges() {
+  if (imageEditorState.busy) {
+    return;
+  }
+
+  const instruction = imageEditInstruction.value.trim();
+
+  if (!instruction) {
+    setImageEditorStatus("请填写具体要修改的内容。", true);
+    imageEditInstruction.focus();
+    return;
+  }
+
+  let maskDataUrl = "";
+
+  try {
+    maskDataUrl = createImageEditMask();
+  } catch (error) {
+    setImageEditorStatus(
+      error instanceof Error ? error.message : "请先标记修改区域。",
+      true,
+    );
+    return;
+  }
+
+  const context = imageEditorState.context;
+  imageEditorState.busy = true;
+  applyImageEdit.disabled = true;
+  closeImageEditor.disabled = true;
+  cancelImageEdit.disabled = true;
+  setImageEditorStatus("正在提交局部修改任务…");
+
+  try {
+    const job = await postJson("/api/images/edits/jobs", {
+      prompt: instruction,
+      image_url: context.imageUrl,
+      mask_data_url: maskDataUrl,
+      aspect_ratio: context.aspectRatio || "1:1",
+    });
+    const data = await pollImageJob(job.job_id);
+    const target = imageEditorState.target;
+
+    if (target === "media") {
+      await renderGeneratedImage(data, instruction);
+      appendMessage(mediaMessages, "assistant", "已按标记区域完成图片修改。", {
+        stateLabel: "IMAGE EDITED",
+        copyText: instruction,
+      });
+    } else {
+      await setAgentImage(data.image_url, instruction);
+      setImageContext("agent", data, agentImageObjectUrl);
+      agentResult.hidden = false;
+      agentResultText.textContent = instruction;
+      appendMessage(agentMessages, "assistant", "已按标记区域完成图片修改。", {
+        stateLabel: "IMAGE EDITED",
+        copyText: instruction,
+      });
+    }
+
+    imageEditorDialog.close();
+  } catch (error) {
+    setImageEditorStatus(
+      error instanceof Error ? error.message : "局部修改失败，请稍后重试。",
+      true,
+    );
+  } finally {
+    imageEditorState.busy = false;
+    closeImageEditor.disabled = false;
+    cancelImageEdit.disabled = false;
+    updateImageEditorAvailability();
+  }
+}
+
 async function generateFromPrompt(prompt) {
   if (!prompt || state.busy.media) {
     return;
@@ -828,7 +1406,7 @@ async function generateFromPrompt(prompt) {
   previewResult.hidden = false;
   previewResult.classList.remove("has-image");
   previewImageWrap.hidden = true;
-  previewImage.removeAttribute("src");
+  clearPreviewImage();
   previewType.textContent = "IMAGE PROMPT";
   previewStatus.textContent = "RENDERING";
   previewPrompt.textContent = prompt;
@@ -843,7 +1421,7 @@ async function generateFromPrompt(prompt) {
     });
     const data = await pollImageJob(job.job_id);
     typing.remove();
-    renderGeneratedImage(data, prompt);
+    await renderGeneratedImage(data, prompt);
     appendMessage(
       mediaMessages,
       "assistant",
@@ -862,7 +1440,7 @@ async function generateFromPrompt(prompt) {
     previewResult.hidden = false;
     previewResult.classList.remove("has-image");
     previewImageWrap.hidden = true;
-    previewImage.removeAttribute("src");
+    clearPreviewImage();
     previewType.textContent = "IMAGE PROMPT";
     previewStatus.textContent = "PROMPT ONLY";
     previewPrompt.textContent = prompt;
@@ -895,8 +1473,12 @@ async function renderImageInBackground(prompt) {
     providerNote.textContent = rendered.image_cached
       ? "OPENAI COMPATIBLE · CACHE HIT"
       : "OPENAI COMPATIBLE · GENERATED";
-    previewImage.src = rendered.image_url;
-    previewImage.alt = prompt;
+    await setPreviewImage(rendered.image_url, prompt);
+    setImageContext(
+      "media",
+      { ...rendered, prompt },
+      previewObjectUrl,
+    );
 
     appendMessage(
       mediaMessages,
@@ -939,7 +1521,7 @@ async function submitMedia(event) {
   previewResult.hidden = true;
   previewResult.classList.remove("has-image");
   previewImageWrap.hidden = true;
-  previewImage.removeAttribute("src");
+  clearPreviewImage();
   providerNote.textContent = "GENERATION PROVIDER · WORKING";
   previewEmptyLabel.textContent = state.mediaType === "image"
     ? "正在生成图片并保存结果…"
@@ -1010,11 +1592,13 @@ async function submitMedia(event) {
     previewPrompt.textContent = data.prompt;
 
     if (hasImage) {
-      previewImage.src = data.image_url;
-      previewImage.alt = data.prompt || "生成的图片";
+      await setPreviewImage(
+        data.image_url,
+        data.prompt || "生成的图片",
+      );
+      setImageContext("media", data, previewObjectUrl);
     } else {
-      previewImage.removeAttribute("src");
-      previewImage.alt = "";
+      clearPreviewImage();
     }
 
     appendMessage(
@@ -1043,7 +1627,7 @@ async function submitMedia(event) {
     previewResult.hidden = true;
     previewResult.classList.remove("has-image");
     previewImageWrap.hidden = true;
-    previewImage.removeAttribute("src");
+    clearPreviewImage();
     providerNote.textContent = "GENERATION PROVIDER · ERROR";
     previewEmptyLabel.textContent = "本次请求没有生成可用结果。";
     appendMessage(
@@ -1057,18 +1641,485 @@ async function submitMedia(event) {
   }
 }
 
+function createAgentTraceItem(text, state = "done", statusText = "") {
+  const row = document.createElement("li");
+  row.className = "agent-trace-item";
+  row.dataset.state = state;
+
+  const node = document.createElement("span");
+  node.className = "agent-trace-node";
+  node.setAttribute("aria-hidden", "true");
+
+  const copy = document.createElement("span");
+  copy.className = "agent-trace-copy";
+  copy.textContent = text;
+
+  row.append(node, copy);
+
+  if (statusText) {
+    const status = document.createElement("span");
+    status.className = "agent-trace-state";
+    status.textContent = statusText;
+    row.appendChild(status);
+  }
+
+  return row;
+}
+
+function renderAgentTraceList(element, items) {
+  element.replaceChildren();
+
+  if (!items.length) {
+    const empty = document.createElement("li");
+    empty.className = "agent-trace-empty";
+    empty.textContent = "暂无记录";
+    element.appendChild(empty);
+    return;
+  }
+
+  items.forEach((item) => {
+    element.appendChild(createAgentTraceItem(item));
+  });
+}
+
+function renderAgentTrace(data) {
+  const status = String(data.status || "unknown").toLowerCase();
+  const steps = Number(data.steps) || 0;
+  agentTraceSteps.textContent = `${steps} STEPS`;
+
+  if (status === "completed") {
+    setAgentLiveState(
+      "任务完成",
+      `Agent 已完成本次任务，共执行 ${steps} 个规划步骤。`,
+      "success",
+    );
+  } else if (status === "waiting_user") {
+    setAgentLiveState(
+      "等待补充",
+      "Agent 已暂停，需要你提供更多信息。",
+      "waiting",
+    );
+  } else if (status === "failed") {
+    setAgentLiveState(
+      "任务中断",
+      data.reply || "本次执行没有生成可用结果。",
+      "error",
+    );
+  } else {
+    setAgentLiveState(
+      "任务收尾",
+      "Agent 正在同步最终结果。",
+      "running",
+    );
+  }
+
+  if (!agentDecisions.querySelector(".agent-trace-item")) {
+    renderAgentTraceList(
+      agentDecisions,
+      data.decision_summaries || [],
+    );
+  }
+
+  if (!agentTools.querySelector(".agent-trace-item")) {
+    renderAgentTraceList(agentTools, data.tool_names || []);
+  }
+}
+
+const AGENT_PHASE_LABELS = {
+  planning: "理解目标",
+  plan: "制定计划",
+  tool: "执行工具",
+  evaluate: "校验结果",
+  finalize: "整理输出",
+  waiting_user: "等待补充",
+};
+
+const AGENT_PHASE_DETAILS = {
+  planning: "正在理解你的目标，并判断下一步该做什么。",
+  plan: "Agent 已形成下一步决策，准备交给执行器。",
+  tool: "工具已经返回结果，Agent 正在接收观察结果。",
+  evaluate: "正在判断当前结果是否足够，是否需要继续执行。",
+  finalize: "执行阶段结束，正在整理可以交付的结果。",
+  waiting_user: "任务暂停，需要你补充信息后才能继续。",
+};
+
+function setAgentLiveState(label, detail, stateName) {
+  agentLiveStatus.dataset.state = stateName;
+  agentProgressBar.dataset.state = stateName;
+  agentTraceStatus.textContent = label;
+  agentTraceDetail.textContent = detail;
+}
+
+function appendAgentTraceItem(
+  element,
+  text,
+  state = "done",
+  statusText = "",
+) {
+  const empty = element.querySelector(".agent-trace-empty");
+
+  if (empty) {
+    empty.remove();
+  }
+
+  const row = createAgentTraceItem(text, state, statusText);
+  element.appendChild(row);
+  return row;
+}
+
+function appendPendingAgentTool(toolName) {
+  agentPendingToolRow = appendAgentTraceItem(
+    agentTools,
+    toolName,
+    "running",
+    "运行中",
+  );
+}
+
+function settlePendingAgentTool(event) {
+  const row = agentPendingToolRow
+    || agentTools.querySelector('.agent-trace-item[data-state="running"]');
+
+  if (!row) {
+    return;
+  }
+
+  const ok = event.ok === true;
+  const elapsed = Number.isFinite(event.elapsed_ms)
+    ? ` · ${event.elapsed_ms}ms`
+    : "";
+  const outcome = ok ? "完成" : (event.error_code || "失败");
+  const copy = row.querySelector(".agent-trace-copy");
+  const status = row.querySelector(".agent-trace-state");
+
+  row.dataset.state = ok ? "success" : "error";
+  copy.textContent = `${event.tool_name || "工具"}${elapsed}`;
+  status.textContent = outcome;
+  agentPendingToolRow = null;
+}
+
+function handleAgentStreamEvent(event) {
+  if (event.event === "result") {
+    const data = event.data || {};
+    const failed = data.status === "failed";
+    const steps = Number(data.steps) || 0;
+    setAgentLiveState(
+      failed ? "任务中断" : "任务完成",
+      failed
+        ? (data.reply || "本次执行没有生成可用结果。")
+        : `结果已整理完成，共执行 ${steps} 个规划步骤。`,
+      failed ? "error" : "success",
+    );
+    return failed ? "FAILED" : "DONE";
+  }
+
+  if (event.event === "error") {
+    setAgentLiveState(
+      "执行中断",
+      event.message || "Agent 执行失败，请稍后重试。",
+      "error",
+    );
+    return "ERROR";
+  }
+
+  if (event.event === "stage") {
+    const label = AGENT_PHASE_LABELS[event.phase]
+      || String(event.phase || "RUNNING").toUpperCase();
+    setAgentLiveState(
+      label,
+      event.label || AGENT_PHASE_DETAILS[event.phase]
+        || "Agent 正在继续执行。",
+      "running",
+    );
+    return label;
+  }
+
+  if (event.event !== "step") {
+    return "";
+  }
+
+  if (Number.isFinite(event.steps)) {
+    agentTraceSteps.textContent = `${event.steps} STEPS`;
+  }
+
+  if (event.phase === "plan" && event.reason) {
+    appendAgentTraceItem(agentDecisions, event.reason);
+
+    if (event.action === "call_tool" && event.tool_name) {
+      appendPendingAgentTool(event.tool_name);
+      setAgentLiveState(
+        "准备执行",
+        `下一步将调用 ${event.tool_name}，等待工具返回结果。`,
+        "running",
+      );
+      return "ACTING";
+    }
+  }
+
+  if (event.phase === "waiting_user" && event.reason) {
+    appendAgentTraceItem(agentDecisions, event.reason);
+    setAgentLiveState(
+      "等待补充",
+      event.reason,
+      "waiting",
+    );
+    return "WAITING";
+  }
+
+  if (event.phase === "tool" && event.tool_name) {
+    settlePendingAgentTool(event);
+    setAgentLiveState(
+      event.ok ? "工具完成" : "工具失败",
+      event.ok
+        ? `${event.tool_name} 已返回结果，Agent 正在读取观察结果。`
+        : (event.message || `${event.tool_name} 执行失败。`),
+      event.ok ? "success" : "error",
+    );
+    return event.ok ? "OBSERVING" : "RETRYING";
+  }
+
+  if (event.phase === "evaluate") {
+    setAgentLiveState(
+      "校验结果",
+      AGENT_PHASE_DETAILS.evaluate,
+      "running",
+    );
+    return "EVALUATING";
+  }
+
+  const label = AGENT_PHASE_LABELS[event.phase] || "RUNNING";
+  setAgentLiveState(
+    label,
+    AGENT_PHASE_DETAILS[event.phase] || "Agent 正在继续执行。",
+    "running",
+  );
+  return label;
+}
+
+async function streamAgent(message, threadId, onEvent) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 180000);
+
+  const send = () =>
+    fetch("/api/agent/stream", {
+      method: "POST",
+      signal: controller.signal,
+      headers: authHeaders({
+        "Content-Type": "application/json",
+        ...threadHeaders("agent"),
+      }),
+      body: JSON.stringify({
+        message,
+        thread_id: threadId,
+      }),
+    });
+
+  try {
+    let response = await send();
+
+    if (response.status === 401 && requestAccessCode()) {
+      response = await send();
+    }
+
+    if (!response.ok || !response.body) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(
+        data.message || data.detail || "Agent 请求失败。",
+      );
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let result = null;
+
+    for (;;) {
+      const { value, done } = await reader.read();
+
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      let boundary = buffer.indexOf("\n\n");
+
+      while (boundary >= 0) {
+        const chunk = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        const parsed = parseSseChunk(chunk);
+
+        if (parsed && parsed.event === "agent") {
+          onEvent(parsed.data);
+
+          if (parsed.data.event === "result") {
+            result = parsed.data.data;
+          } else if (parsed.data.event === "error") {
+            throw new Error(
+              parsed.data.message || "Agent 执行失败。",
+            );
+          }
+        } else if (parsed && parsed.event === "error") {
+          throw new Error(
+            parsed.data.message || "Agent 执行失败。",
+          );
+        }
+
+        boundary = buffer.indexOf("\n\n");
+      }
+    }
+
+    if (!result) {
+      throw new Error("Agent 连接中断，请刷新页面查看历史。");
+    }
+
+    return result;
+  } catch (error) {
+    if (error && error.name === "AbortError") {
+      throw new Error("Agent 执行超时，请稍后重试。");
+    }
+
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function submitAgent(event) {
+  event.preventDefault();
+
+  if (state.busy.agent) {
+    return;
+  }
+
+  const message = agentInput.value.trim();
+
+  if (!message) {
+    agentInput.focus();
+    return;
+  }
+
+  appendMessage(agentMessages, "user", message);
+  agentInput.value = "";
+  resizeTextarea(agentInput);
+  setBusy("agent", true);
+  agentPendingToolRow = null;
+  setAgentLiveState(
+    "准备开始",
+    "正在连接 Agent，并读取最近的对话上下文。",
+    "running",
+  );
+  agentTraceSteps.textContent = "0 STEPS";
+  renderAgentTraceList(agentDecisions, []);
+  renderAgentTraceList(agentTools, []);
+  agentResult.hidden = true;
+  agentResultText.textContent = "";
+  clearAgentImage();
+  const typing = appendTyping(agentMessages, "PLANNING");
+  const typingStatus = typing.querySelector(".message-state");
+
+  try {
+    const data = await streamAgent(
+      message,
+      state.threadIds.agent,
+      (event) => {
+        const label = handleAgentStreamEvent(event);
+
+        if (label && typingStatus) {
+          typingStatus.textContent = label;
+        }
+      },
+    );
+    saveThreadId("agent", data.thread_id);
+    typing.remove();
+    renderAgentTrace(data);
+    agentResult.hidden = false;
+
+    if (data.response_type === "image" && data.image_url) {
+      await setAgentImage(
+        data.image_url,
+        data.prompt || "Agent 生成的图片",
+      );
+      setImageContext("agent", data, agentImageObjectUrl);
+      agentResultText.textContent = data.prompt || data.reply || "";
+      appendMessage(
+        agentMessages,
+        "assistant",
+        data.reply || "图片已生成。",
+        {
+          stateLabel: "IMAGE",
+          copyText: data.prompt || "",
+        },
+      );
+      return;
+    }
+
+    if (data.response_type === "prompt" && data.prompt) {
+      agentResultText.textContent = data.prompt;
+      appendMessage(
+        agentMessages,
+        "assistant",
+        data.prompt,
+        {
+          stateLabel: "PROMPT",
+          copyText: data.prompt,
+          actionLabel: "用此提示词直接生图",
+          onAction: () => generateFromPrompt(data.prompt),
+          sources: data.sources || [],
+        },
+      );
+      return;
+    }
+
+    agentResultText.textContent = data.reply || "Agent 执行结束。";
+    appendMessage(
+      agentMessages,
+      data.response_type === "failed" ? "error" : "assistant",
+      data.reply || "Agent 执行结束。",
+      {
+        stateLabel: String(data.status || "DONE").toUpperCase(),
+        sources: data.sources || [],
+      },
+    );
+  } catch (error) {
+    typing.remove();
+    setAgentLiveState(
+      "执行中断",
+      error instanceof Error ? error.message : "Agent 执行失败。",
+      "error",
+    );
+    appendMessage(
+      agentMessages,
+      "error",
+      error instanceof Error ? error.message : "Agent 执行失败。",
+    );
+  } finally {
+    setBusy("agent", false);
+    agentInput.focus();
+  }
+}
+
 function initializeExamples() {
-  document.querySelectorAll(".example-chip").forEach((button) => {
+  document.querySelectorAll(".example-chip[data-example]").forEach((button) => {
     button.addEventListener("click", () => {
       promptInput.value = button.dataset.example || "";
       resizeTextarea(promptInput);
       promptInput.focus();
     });
   });
+
+  document.querySelectorAll(".example-chip[data-agent-example]").forEach(
+    (button) => {
+      button.addEventListener("click", () => {
+        agentInput.value = button.dataset.agentExample || "";
+        resizeTextarea(agentInput);
+        agentInput.focus();
+      });
+    },
+  );
 }
 
 function initializeTextareas() {
-  [promptInput, mediaInput].forEach((textarea) => {
+  [promptInput, mediaInput, agentInput].forEach((textarea) => {
     textarea.addEventListener("input", () => resizeTextarea(textarea));
     textarea.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && !event.shiftKey) {
@@ -1092,7 +2143,7 @@ function initializeMediaTabs() {
       if (state.mediaType !== "image") {
         previewResult.classList.remove("has-image");
         previewImageWrap.hidden = true;
-        previewImage.removeAttribute("src");
+        clearPreviewImage();
       }
     });
   });
@@ -1113,7 +2164,7 @@ function initializePromptDialog() {
 async function getJson(path) {
   const response = await fetch(path, { headers: authHeaders({}) });
 
-  if (response.status === 401 && promptForAccessCode()) {
+  if (response.status === 401 && requestAccessCode()) {
     return getJson(path);
   }
 
@@ -1126,9 +2177,9 @@ async function getJson(path) {
 }
 
 function activeTool() {
-  const panel = document.getElementById("panel-media");
-
-  return panel && panel.classList.contains("is-active") ? "media" : "prompt";
+  return state.tool === "media" || state.tool === "agent"
+    ? state.tool
+    : "prompt";
 }
 
 function formatHistoryTime(value) {
@@ -1189,7 +2240,7 @@ async function openHistoryDialog() {
 
 async function startNewConversation() {
   const tool = activeTool();
-  const container = tool === "media" ? mediaMessages : promptMessages;
+  const container = messageContainer(tool);
 
   try {
     const data = await postJson("/api/conversations", { tool });
@@ -1250,6 +2301,8 @@ async function restoreSession() {
     mediaMessages.replaceChildren();
     state.threadIds.prompt = "";
     state.threadIds.media = "";
+    agentMessages.replaceChildren();
+    state.threadIds.agent = "";
     await bootstrapSession();
     appendMessage(promptMessages, "assistant", "会话已恢复。", {
       stateLabel: "RESTORED",
@@ -1265,8 +2318,10 @@ async function resetSession() {
     sessionDialog.close();
     promptMessages.replaceChildren();
     mediaMessages.replaceChildren();
+    agentMessages.replaceChildren();
     state.threadIds.prompt = "";
     state.threadIds.media = "";
+    state.threadIds.agent = "";
     await bootstrapSession();
     appendMessage(promptMessages, "assistant", "已切换到新会话。", {
       stateLabel: "NEW SESSION",
@@ -1286,6 +2341,7 @@ async function bootstrapSession() {
 
   await loadConversationHistory("prompt");
   await loadConversationHistory("media");
+  await loadConversationHistory("agent");
 }
 
 function initializeHistoryDialog() {
@@ -1325,7 +2381,7 @@ function initializeSessionDialog() {
 }
 
 async function loadConversationHistory(tool, threadId) {
-  const container = tool === "prompt" ? promptMessages : mediaMessages;
+  const container = messageContainer(tool);
 
   try {
     let target = threadId;
@@ -1426,6 +2482,79 @@ toolButtons.forEach((button) => {
 
 promptForm.addEventListener("submit", submitPrompt);
 mediaForm.addEventListener("submit", submitMedia);
+agentForm.addEventListener("submit", submitAgent);
+
+downloadPreviewImage.addEventListener("click", () => {
+  downloadImageTarget("media").catch((error) => {
+    window.alert(error instanceof Error ? error.message : "图片下载失败。");
+  });
+});
+downloadAgentImage.addEventListener("click", () => {
+  downloadImageTarget("agent").catch((error) => {
+    window.alert(error instanceof Error ? error.message : "图片下载失败。");
+  });
+});
+copyPreviewPrompt.addEventListener("click", () => {
+  copyPromptForTarget("media").catch(() => {
+    window.alert("提示词复制失败，请检查浏览器剪贴板权限。");
+  });
+});
+copyAgentPrompt.addEventListener("click", () => {
+  copyPromptForTarget("agent").catch(() => {
+    window.alert("提示词复制失败，请检查浏览器剪贴板权限。");
+  });
+});
+editPreviewImage.addEventListener("click", () => openImageEditor("media"));
+editAgentImage.addEventListener("click", () => openImageEditor("agent"));
+
+editorTools.forEach((button) => {
+  button.addEventListener("click", () => {
+    setImageEditorTool(button.dataset.editorTool || "brush");
+  });
+});
+imageBrushSize.addEventListener("input", () => {
+  imageEditorState.brushSize = Number(imageBrushSize.value) || 28;
+  imageBrushSizeLabel.textContent = `${imageEditorState.brushSize} px`;
+});
+undoImageMark.addEventListener("click", () => {
+  imageEditorState.strokes.pop();
+  drawImageEditor();
+  updateImageEditorAvailability();
+  setImageEditorStatus(
+    imageEditorState.strokes.length
+      ? "已撤销上一笔"
+      : "尚未标记区域",
+  );
+});
+clearImageMarks.addEventListener("click", () => {
+  imageEditorState.strokes = [];
+  imageEditorState.activeStroke = null;
+  drawImageEditor();
+  updateImageEditorAvailability();
+  setImageEditorStatus("尚未标记区域");
+});
+imageEditorCanvas.addEventListener("pointerdown", beginImageMark);
+imageEditorCanvas.addEventListener("pointermove", continueImageMark);
+imageEditorCanvas.addEventListener("pointerup", finishImageMark);
+imageEditorCanvas.addEventListener("pointercancel", finishImageMark);
+imageEditorSource.addEventListener("load", configureImageEditorCanvas);
+closeImageEditor.addEventListener("click", closeImageEditorDialog);
+cancelImageEdit.addEventListener("click", closeImageEditorDialog);
+applyImageEdit.addEventListener("click", applyImageEditorChanges);
+imageEditorDialog.addEventListener("cancel", (event) => {
+  if (imageEditorState.busy) {
+    event.preventDefault();
+  }
+});
+
+if ("ResizeObserver" in window) {
+  const imageEditorResizeObserver = new ResizeObserver(() => {
+    if (imageEditorDialog.open) {
+      configureImageEditorCanvas();
+    }
+  });
+  imageEditorResizeObserver.observe(imageEditorSource);
+}
 
 initializeExamples();
 initializeTextareas();
@@ -1440,7 +2569,11 @@ bootstrapSession();
 try {
   const storedTool = localStorage.getItem("prompt-atelier-tool");
 
-  if (storedTool === "prompt" || storedTool === "media") {
+  if (
+    storedTool === "prompt"
+    || storedTool === "media"
+    || storedTool === "agent"
+  ) {
     switchTool(storedTool);
   }
 } catch {

@@ -1,6 +1,7 @@
 """Image generation providers."""
 
 from prompt_search_agent.images.base import (
+    ImageEditRequest,
     ImageGenerationError,
     ImageGenerationRequest,
     ImageGenerationResult,
@@ -11,6 +12,7 @@ from prompt_search_agent.images.openai_compatible import (
 )
 
 __all__ = [
+    "ImageEditRequest",
     "ImageGenerationError",
     "ImageGenerationRequest",
     "ImageGenerationResult",

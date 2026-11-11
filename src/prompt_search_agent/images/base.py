@@ -15,6 +15,13 @@ class ImageGenerationRequest(BaseModel):
     size: str
 
 
+class ImageEditRequest(BaseModel):
+    prompt: str = Field(min_length=1)
+    image_path: Path
+    mask_bytes: bytes
+    size: str
+
+
 class ImageGenerationResult(BaseModel):
     image_id: str
     file_name: str
@@ -31,4 +38,9 @@ class ImageProvider(Protocol):
     def generate(
         self,
         request: ImageGenerationRequest,
+    ) -> ImageGenerationResult: ...
+
+    def edit(
+        self,
+        request: ImageEditRequest,
     ) -> ImageGenerationResult: ...

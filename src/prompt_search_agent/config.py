@@ -37,8 +37,11 @@ class Settings(BaseSettings):
     prompt_db_path: Path = DATA_DIR / "indexes" / "prompt_index.sqlite3"
     image_output_dir: Path = DATA_DIR / "generated" / "images"
     seed_file: Path = DATA_DIR / "seed" / "prompts.jsonl.gz"
+    agent_checkpoint_path: Path = DATA_DIR / "agent" / "checkpoints.sqlite3"
+    agent_max_steps: int = 8
 
     # 公网运行约束。
+    public_mode: bool = False
     demo_access_code: SecretStr | None = None
     thread_secret: SecretStr = SecretStr(DEFAULT_THREAD_SECRET)
     rate_limit_per_ip_per_hour: int = 20
@@ -52,7 +55,7 @@ class Settings(BaseSettings):
     upstream_failure_threshold: int = 5
     upstream_cooldown_seconds: float = 30.0
     # 请求体上限，4000 字的消息用 256KB 绰绰有余。
-    max_request_body_bytes: int = 262_144
+    max_request_body_bytes: int = 2_500_000
     # 生成排队上限，超过直接 503 而不是无限等待。
     max_generation_queue: int = 16
 
@@ -131,6 +134,9 @@ class Settings(BaseSettings):
             self.data_dir / "indexes" / "prompt_index.sqlite3"
         )
         self.image_output_dir = self.data_dir / "generated" / "images"
+        self.agent_checkpoint_path = (
+            self.data_dir / "agent" / "checkpoints.sqlite3"
+        )
 
         if not os.getenv("SEED_FILE", "").strip():
             self.seed_file = self.data_dir / "seed" / "prompts.jsonl.gz"
@@ -140,7 +146,7 @@ class Settings(BaseSettings):
     @property
     def is_public_mode(self) -> bool:
         """配置了访问口令即视为公网部署。"""
-        return _filled(self.demo_access_code)
+        return self.public_mode or _filled(self.demo_access_code)
 
     @property
     def thread_secret_value(self) -> str:
@@ -152,12 +158,15 @@ class Settings(BaseSettings):
 
         if not _filled(self.deepseek_api_key):
             problems.append("DEEPSEEK_API_KEY 未配置 → 提示词生成不可用")
-        if not _filled(self.demo_access_code):
+        if self.public_mode and not _filled(self.demo_access_code):
             problems.append(
-                "DEMO_ACCESS_CODE 未配置 → 公网部署必须设置，否则接口裸奔"
+                "PUBLIC_MODE=true 但 DEMO_ACCESS_CODE 未配置"
             )
-        if self.thread_secret_value == DEFAULT_THREAD_SECRET:
-            problems.append("THREAD_SECRET 仍是默认值 → 公网部署必须更换为随机串")
+        if (
+            self.is_public_mode
+            and self.thread_secret_value == DEFAULT_THREAD_SECRET
+        ):
+            problems.append("公网模式必须更换 THREAD_SECRET")
         if self.is_public_mode and not self.demo_readonly_library:
             problems.append(
                 "已开启访问口令但 DEMO_READONLY_LIBRARY=false "
@@ -167,6 +176,22 @@ class Settings(BaseSettings):
             problems.append("TAVILY_API_KEY 未配置 → 本地无匹配时不会联网补全")
 
         return problems
+
+    def assert_runtime_safe(self) -> None:
+        """公网模式采用 fail-closed，避免误部署为无鉴权服务。"""
+        if not self.is_public_mode:
+            return
+
+        errors: list[str] = []
+
+        if not _filled(self.demo_access_code):
+            errors.append("PUBLIC_MODE=true 时必须配置 DEMO_ACCESS_CODE")
+
+        if self.thread_secret_value == DEFAULT_THREAD_SECRET:
+            errors.append("公网模式必须配置随机的 THREAD_SECRET")
+
+        if errors:
+            raise RuntimeError("；".join(errors))
 
 
 def _filled(value: SecretStr | None) -> bool:

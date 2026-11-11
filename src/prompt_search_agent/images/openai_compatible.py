@@ -3,6 +3,7 @@
 import base64
 import binascii
 import ipaddress
+import mimetypes
 import socket
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -19,6 +20,7 @@ from uuid import uuid4
 from openai import OpenAI, OpenAIError
 
 from prompt_search_agent.images.base import (
+    ImageEditRequest,
     ImageGenerationError,
     ImageGenerationRequest,
     ImageGenerationResult,
@@ -210,6 +212,7 @@ class OpenAIImageProvider:
             api_key=api_key,
             base_url=api_base.rstrip("/"),
             timeout=timeout_seconds,
+            max_retries=0,
         )
         self.downloader = downloader or (
             lambda url: _download_image(
@@ -243,6 +246,70 @@ class OpenAIImageProvider:
                 f"Image API request failed: {exc}"
             ) from exc
 
+        return self._store_response(response, request.prompt, request.size)
+
+    def edit(
+        self,
+        request: ImageEditRequest,
+    ) -> ImageGenerationResult:
+        try:
+            image_content = request.image_path.read_bytes()
+        except OSError as exc:
+            raise ImageGenerationError(
+                "Failed to read the source image"
+            ) from exc
+
+        if not image_content:
+            raise ImageGenerationError("Source image is empty")
+        if len(image_content) > self.max_download_bytes:
+            raise ImageGenerationError("Source image exceeds the size limit")
+        if not request.mask_bytes:
+            raise ImageGenerationError("Edit mask is empty")
+        if len(request.mask_bytes) > self.max_download_bytes:
+            raise ImageGenerationError("Edit mask exceeds the size limit")
+
+        image_content_type = (
+            mimetypes.guess_type(request.image_path.name)[0]
+            or "application/octet-stream"
+        )
+        request_options: dict[str, Any] = {
+            "model": self.model,
+            "image": (
+                request.image_path.name,
+                image_content,
+                image_content_type,
+            ),
+            "mask": (
+                "mask.png",
+                request.mask_bytes,
+                "image/png",
+            ),
+            "prompt": request.prompt,
+            "n": 1,
+            "size": request.size,
+        }
+
+        if self.response_format:
+            request_options["response_format"] = self.response_format
+
+        if self.output_format:
+            request_options["output_format"] = self.output_format
+
+        try:
+            response = self.client.images.edit(**request_options)
+        except OpenAIError as exc:
+            raise ImageGenerationError(
+                f"Image edit API request failed: {exc}"
+            ) from exc
+
+        return self._store_response(response, request.prompt, request.size)
+
+    def _store_response(
+        self,
+        response: Any,
+        prompt: str,
+        size: str,
+    ) -> ImageGenerationResult:
         items = _normalize_response_items(response)
         if not items:
             raise ImageGenerationError(
@@ -290,7 +357,7 @@ class OpenAIImageProvider:
             image_id=image_id,
             file_name=file_name,
             file_path=file_path,
-            prompt=request.prompt,
+            prompt=prompt,
             revised_prompt=(
                 revised_prompt
                 if isinstance(revised_prompt, str)
@@ -298,7 +365,7 @@ class OpenAIImageProvider:
             ),
             provider="openai-compatible",
             model=self.model,
-            size=request.size,
+            size=size,
         )
 
     def _load_image(
